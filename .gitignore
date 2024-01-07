@@ -2,5 +2,5 @@
 .idea/*
 .venv
 .venv/*
-Test.py
 TestData/
+tests/
