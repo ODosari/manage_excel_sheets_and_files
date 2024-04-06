@@ -21,7 +21,7 @@ def print_help_message():
     print("or split a single Excel file into multiple sheets or files based on a specific column.")
     print("\nCommands:")
     print("C <path> - Combine all Excel files in <path> into a single file.")
-    print("S <file> - Split an Excel file <file> into multiple sheets or files based on a column.")
+    print("S <file> - Split an Excel file into multiple sheets or files based on a column.")
     print("Q - Quit the program.")
     print("################################################################################")
 
