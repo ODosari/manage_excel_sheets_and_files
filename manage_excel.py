@@ -48,7 +48,7 @@ def combine_excel_files(path):
         selected_files = files if selected_files_idx.lower() == 'all' else [files[int(i) - 1] for i in
                                                                             selected_files_idx.split(',')]
 
-        output_file = get_timestamped_filename(path, 'combined', '.xlsx')
+        output_file = get_timestamped_filename(path, 'Combined', '.xlsx')
         choice = input("Combine into one sheet (O) or into one workbook with different sheets (W)?: ").lower()
 
         if choice == 'o':
@@ -58,7 +58,7 @@ def combine_excel_files(path):
                 if dfs is not None:
                     for df in dfs:
                         combined_df = pd.concat([combined_df, df], ignore_index=True)
-            combined_df.to_excel(output_file, sheet_name='Combined', index=False)
+            combined_df.to_excel(output_file, sheet_name='Combined', engine='openpyxl', index=False)
 
         elif choice == 'w':
             with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
@@ -66,8 +66,7 @@ def combine_excel_files(path):
                     dfs = choose_sheet_from_file(file)
                     if dfs is not None:
                         for df in dfs:
-                            sheet_name = os.path.splitext(os.path.basename(file))[0][
-                                         :31]  # Excel sheet name limit is 31 characters
+                            sheet_name = os.path.splitext(os.path.basename(file))[0][:31]  # Excel sheet name limit is 31 characters
                             df.to_excel(writer, sheet_name=sheet_name, index=False)
 
         print(f'Files combined successfully. Output File: {output_file}')
@@ -77,25 +76,29 @@ def combine_excel_files(path):
 
 
 def choose_sheet_from_file(file):
-    workbook = pd.ExcelFile(file)
-    sheet_names = workbook.sheet_names
-    print(f"Available sheets in {file}: {sheet_names}")
-    print("Type 'all' to select all sheets.")
+    try:
+        workbook = pd.ExcelFile(file, engine='openpyxl')  # Explicitly specify the engine here
+        sheet_names = workbook.sheet_names
+        print(f"Available sheets in {file}: {sheet_names}")
+        print("Type 'all' to select all sheets.")
 
-    chosen_sheet = input(f"Enter the name of the sheet to combine from {file} or type 'all': ").strip()
-    if chosen_sheet.lower() == 'all':
-        return [pd.read_excel(file, sheet_name=sheet) for sheet in sheet_names]
-    elif chosen_sheet not in sheet_names:
-        print(f"Sheet '{chosen_sheet}' not found in {file}. Skipping this file.")
+        chosen_sheet = input(f"Enter the name of the sheet to combine from {file} or type 'all': ").strip()
+        if chosen_sheet.lower() == 'all':
+            return [pd.read_excel(file, sheet_name=sheet, engine='openpyxl') for sheet in sheet_names]
+        elif chosen_sheet not in sheet_names:
+            print(f"Sheet '{chosen_sheet}' not found in {file}. Skipping this file.")
+            return None
+        else:
+            return [pd.read_excel(file, sheet_name=chosen_sheet, engine='openpyxl')]  # Specify the engine
+    except Exception as e:
+        print(f"Error reading file {file}: {e}")
         return None
-    else:
-        return [pd.read_excel(file, sheet_name=chosen_sheet)]
 
 
 def split_excel_file(file):
     try:
         # Load the workbook and get the sheet names
-        workbook = pd.ExcelFile(file)
+        workbook = pd.ExcelFile(file, engine='openpyxl')
         sheet_names = workbook.sheet_names
         print(f"Available sheets: {sheet_names}")
 
@@ -106,7 +109,7 @@ def split_excel_file(file):
             return
 
         # Read the specified sheet
-        df = pd.read_excel(file, sheet_name=chosen_sheet)
+        df = pd.read_excel(file, sheet_name=chosen_sheet, engine='openpyxl')
         cols_name = df.columns.tolist()
         print(f'Columns name(s) in {chosen_sheet}: {cols_name}')
         column_name = input('Type the name of Column to split by: ').strip()
@@ -143,7 +146,7 @@ def send_to_file(df, cols, column_name, file, sheet_name):
 
     for value in cols:
         output_file = get_timestamped_filename(directory, f'{base_filename}_{column_name}_{value}', '.xlsx')
-        df[df[column_name] == value].to_excel(output_file, sheet_name=str(value), index=False)
+        df[df[column_name] == value].to_excel(output_file, sheet_name=str(value), engine='openpyxl', index=False)
 
     print('Data split into files successfully.')
 
@@ -157,7 +160,7 @@ def send_to_sheet(df, cols, column_name, file, sheet_name):
         for value in cols:
             sn = str(value)[:31]  # Excel sheet name limit is 31 characters
             filtered_df = df[df[column_name] == value]
-            filtered_df.to_excel(writer, sheet_name=sn, index=False)
+            filtered_df.to_excel(writer, sheet_name=sn, index=False, engine='openpyxl')
 
     print(f'Data split into sheets successfully. Output File: {output_file}')
 
