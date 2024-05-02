@@ -106,29 +106,32 @@ def split_excel_file(file):
         sheet_names = workbook.sheet_names
         print(f"Available sheets: {sheet_names}")
 
-        # Prompt the user to choose a sheet
-        chosen_sheet = input("Enter the name of the sheet to split: ").strip()
-        if chosen_sheet not in sheet_names:
-            print(f"Sheet '{chosen_sheet}' not found in the workbook. Please try again.")
-            return
+        if len(sheet_names) == 1:
+            chosen_sheet = sheet_names[0]
+            print(f"Only one sheet ('{chosen_sheet}') available, automatically selected.")
+        else:
+            chosen_sheet = input("Enter the name of the sheet to split: ").strip()
+            if chosen_sheet not in sheet_names:
+                print(f"Sheet '{chosen_sheet}' not found in the workbook. Please try again.")
+                return
 
         # Read the specified sheet
         df = pd.read_excel(file, sheet_name=chosen_sheet, engine='openpyxl')
         cols_name = df.columns.tolist()
-        print(f'Columns name(s) in {chosen_sheet}: {cols_name}')
-        column_name = input('Type the name of Column to split by: ').strip()
 
-        if column_name not in cols_name:
-            print(f"The Column name '{column_name}' is not found in '{chosen_sheet}'. Please try again.")
+        # List columns with indices
+        print("Columns available for splitting:")
+        for index, col in enumerate(cols_name, 1):
+            print(f"{index}. {col}")
+
+        column_index = int(input('Enter the index number of the column to split by: '))
+        if column_index < 1 or column_index > len(cols_name):
+            print("Invalid column index. Please try again.")
             return
 
+        column_name = cols_name[column_index - 1]
         cols = df[column_name].unique()
-        print(f'Your data will be split based on these values: {", ".join(map(str, cols))}.')
-
-        choice = input('Ready to Proceed? (Y/N): ').lower()
-        if choice != 'y':
-            print("Operation cancelled.")
-            return
+        print(f'Your data will be split based on these values in "{column_name}": {", ".join(map(str, cols))}.')
 
         split_type = input('Split into different Sheets or Files (S/F): ').lower()
         if split_type == 'f':
@@ -145,8 +148,7 @@ def send_to_file(df, cols, column_name, file, sheet_name):
     directory = os.path.dirname(file)
     base_filename = f"{os.path.splitext(os.path.basename(file))[0]}_{sheet_name}"
 
-    if not os.path.exists(directory):
-        os.makedirs(directory)
+    os.makedirs(directory, exist_ok=True)  # Ensure the directory exists without checking if it already exists
 
     for value in cols:
         output_file = get_timestamped_filename(directory, f'{base_filename}_{column_name}_{value}', '.xlsx')
@@ -157,8 +159,7 @@ def send_to_file(df, cols, column_name, file, sheet_name):
 
 def send_to_sheet(df, cols, column_name, file, sheet_name):
     directory = os.path.dirname(file)
-    output_file = get_timestamped_filename(directory,
-                                           f'{os.path.splitext(os.path.basename(file))[0]}_{sheet_name}_split', '.xlsx')
+    output_file = get_timestamped_filename(directory, f'{os.path.splitext(os.path.basename(file))[0]}_{sheet_name}_split', '.xlsx')
 
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         for value in cols:
