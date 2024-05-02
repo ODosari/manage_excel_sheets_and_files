@@ -45,8 +45,7 @@ def combine_excel_files(path):
         print("Type 'all' to select all files.")
 
         selected_files_idx = input("Enter the numbers of the files to combine (separated by commas) or type 'all': ")
-        selected_files = files if selected_files_idx.lower() == 'all' else [files[int(i) - 1] for i in
-                                                                            selected_files_idx.split(',')]
+        selected_files = files if selected_files_idx.lower() == 'all' else [files[int(i) - 1] for i in selected_files_idx.split(',')]
 
         output_file = get_timestamped_filename(path, 'Combined', '.xlsx')
         choice = input("Combine into one sheet (O) or into one workbook with different sheets (W)?: ").lower()
@@ -54,20 +53,21 @@ def combine_excel_files(path):
         if choice == 'o':
             combined_df = pd.DataFrame()
             for file in selected_files:
-                dfs = choose_sheet_from_file(file)
-                if dfs is not None:
-                    for df in dfs:
+                df_list = choose_sheet_from_file(file)
+                if df_list is not None:
+                    for sheet_name, df in df_list:
                         combined_df = pd.concat([combined_df, df], ignore_index=True)
             combined_df.to_excel(output_file, sheet_name='Combined', engine='openpyxl', index=False)
 
         elif choice == 'w':
             with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
                 for file in selected_files:
-                    dfs = choose_sheet_from_file(file)
-                    if dfs is not None:
-                        for df in dfs:
-                            sheet_name = os.path.splitext(os.path.basename(file))[0][:31]  # Excel sheet name limit is 31 characters
-                            df.to_excel(writer, sheet_name=sheet_name, index=False)
+                    df_list = choose_sheet_from_file(file)
+                    if df_list is not None:
+                        for sheet_name, df in df_list:
+                            # Normalize the sheet name to create unique names
+                            safe_sheet_name = f"{os.path.splitext(os.path.basename(file))[0]}_{sheet_name}".replace(' ', '_')[:31]
+                            df.to_excel(writer, sheet_name=safe_sheet_name, index=False)
 
         print(f'Files combined successfully. Output File: {output_file}')
 
@@ -77,19 +77,23 @@ def combine_excel_files(path):
 
 def choose_sheet_from_file(file):
     try:
-        workbook = pd.ExcelFile(file, engine='openpyxl')  # Explicitly specify the engine here
+        workbook = pd.ExcelFile(file, engine='openpyxl')
         sheet_names = workbook.sheet_names
         print(f"Available sheets in {file}: {sheet_names}")
-        print("Type 'all' to select all sheets.")
 
-        chosen_sheet = input(f"Enter the name of the sheet to combine from {file} or type 'all': ").strip()
-        if chosen_sheet.lower() == 'all':
-            return [pd.read_excel(file, sheet_name=sheet, engine='openpyxl') for sheet in sheet_names]
-        elif chosen_sheet not in sheet_names:
-            print(f"Sheet '{chosen_sheet}' not found in {file}. Skipping this file.")
-            return None
+        if len(sheet_names) == 1:  # If there's only one sheet, return it immediately
+            print(f"Only one sheet available ('{sheet_names[0]}'), automatically selecting it.")
+            return [(sheet_names[0], pd.read_excel(file, sheet_name=sheet_names[0], engine='openpyxl'))]
         else:
-            return [pd.read_excel(file, sheet_name=chosen_sheet, engine='openpyxl')]  # Specify the engine
+            print("Type 'all' to select all sheets.")
+            chosen_sheet = input(f"Enter the name of the sheet to combine from {file} or type 'all': ").strip()
+            if chosen_sheet.lower() == 'all':
+                return [(sheet, pd.read_excel(file, sheet_name=sheet, engine='openpyxl')) for sheet in sheet_names]
+            elif chosen_sheet not in sheet_names:
+                print(f"Sheet '{chosen_sheet}' not found in {file}. Skipping this file.")
+                return None
+            else:
+                return [(chosen_sheet, pd.read_excel(file, sheet_name=chosen_sheet, engine='openpyxl'))]
     except Exception as e:
         print(f"Error reading file {file}: {e}")
         return None
