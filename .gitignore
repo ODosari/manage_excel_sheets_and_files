@@ -4,4 +4,4 @@
 .venv/*
 venv/
 TestData/
-tests/
+*.log
