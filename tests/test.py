@@ -13,8 +13,7 @@ import argparse
 import io
 import logging
 from msoffcrypto import OfficeFile
-from openpyxl import load_workbook
-from pandas import ExcelFile, ExcelWriter, DataFrame, read_excel, Series
+from pandas import ExcelWriter, DataFrame, read_excel, Series
 
 PASSWORD_TEMPLATE_BASE = 'passwords_template'
 
