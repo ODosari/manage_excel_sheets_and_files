@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # Name = "Manage Excel Sheets and Files"
-# Version = "1.7"
+# Version = "1.0"
 # By = "Obaid Aldosari"
 # GitHub = "https://github.com/ODosari/manage_excel_sheets_and_files"
 
