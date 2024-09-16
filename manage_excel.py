@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # Name = "Manage Excel Sheets and Files"
-# Version = "0.6"
+# Version = "0.7"
 # By = "Obaid Aldosari"
 # GitHub = "https://github.com/ODosari/manage_excel_sheets_and_files"
 
@@ -15,6 +15,7 @@ import tempfile
 import msoffcrypto
 import io
 import traceback
+from contextlib import closing
 
 def print_help_message():
     print("################################################################################")
@@ -45,23 +46,23 @@ def unprotect_excel_file(file):
             else:
                 # File is not encrypted
                 wb = load_workbook(file, read_only=False, keep_vba=True, data_only=False, keep_links=False)
+
+        # Unprotect workbook
+        wb.security = None  # Remove workbook-level protection
+
+        # Unprotect sheets
+        for sheet in wb.worksheets:
+            sheet.protection.enabled = False
+            sheet.protection.sheet = False
+
+        # Save to a temporary file
+        temp = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
+        wb.save(temp.name)
+        temp.close()
+        return temp.name
     except Exception as e:
         print(f"Failed to open {file}: {e}")
         return None
-
-    # Unprotect workbook
-    wb.security = None  # Remove workbook-level protection
-
-    # Unprotect sheets
-    for sheet in wb.worksheets:
-        sheet.protection.enabled = False
-        sheet.protection.sheet = False
-
-    # Save to a temporary file
-    temp = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
-    wb.save(temp.name)
-    temp.close()
-    return temp.name
 
 def combine_excel_files(path):
     try:
@@ -114,29 +115,31 @@ def choose_sheet_from_file(file):
         unprotected_file = unprotect_excel_file(file)
         if unprotected_file is None:
             return None
-        workbook = pd.ExcelFile(unprotected_file, engine='openpyxl')
-        sheet_names = workbook.sheet_names
-        print(f"Available sheets in {file}: {sheet_names}")
 
-        if len(sheet_names) == 1:  # If there's only one sheet, return it immediately
-            print(f"Only one sheet available ('{sheet_names[0]}'), automatically selecting it.")
-            df = pd.read_excel(unprotected_file, sheet_name=sheet_names[0], engine='openpyxl')
-            return [(sheet_names[0], df)]
-        else:
-            print("Type 'all' to select all sheets.")
-            chosen_sheet = input(f"Enter the name of the sheet to combine from {file} or type 'all': ").strip()
-            if chosen_sheet.lower() == 'all':
-                df_list = []
-                for sheet in sheet_names:
-                    df = pd.read_excel(unprotected_file, sheet_name=sheet, engine='openpyxl')
-                    df_list.append((sheet, df))
-                return df_list
-            elif chosen_sheet not in sheet_names:
-                print(f"Sheet '{chosen_sheet}' not found in {file}. Skipping this file.")
-                return None
+        # Use contextlib.closing to ensure workbook is closed
+        with closing(pd.ExcelFile(unprotected_file, engine='openpyxl')) as workbook:
+            sheet_names = workbook.sheet_names
+            print(f"Available sheets in {file}: {sheet_names}")
+
+            if len(sheet_names) == 1:  # If there's only one sheet, return it immediately
+                print(f"Only one sheet available ('{sheet_names[0]}'), automatically selecting it.")
+                df = pd.read_excel(unprotected_file, sheet_name=sheet_names[0], engine='openpyxl')
+                return [(sheet_names[0], df)]
             else:
-                df = pd.read_excel(unprotected_file, sheet_name=chosen_sheet, engine='openpyxl')
-                return [(chosen_sheet, df)]
+                print("Type 'all' to select all sheets.")
+                chosen_sheet = input(f"Enter the name of the sheet to combine from {file} or type 'all': ").strip()
+                if chosen_sheet.lower() == 'all':
+                    df_list = []
+                    for sheet in sheet_names:
+                        df = pd.read_excel(unprotected_file, sheet_name=sheet, engine='openpyxl')
+                        df_list.append((sheet, df))
+                    return df_list
+                elif chosen_sheet not in sheet_names:
+                    print(f"Sheet '{chosen_sheet}' not found in {file}. Skipping this file.")
+                    return None
+                else:
+                    df = pd.read_excel(unprotected_file, sheet_name=chosen_sheet, engine='openpyxl')
+                    return [(chosen_sheet, df)]
     except Exception as e:
         print(f"Error reading file {file}: {e}")
         traceback.print_exc()
@@ -152,44 +155,45 @@ def split_excel_file(file):
         unprotected_file = unprotect_excel_file(file)
         if unprotected_file is None:
             return
-        workbook = pd.ExcelFile(unprotected_file, engine='openpyxl')
-        sheet_names = workbook.sheet_names
-        print(f"Available sheets: {sheet_names}")
+        # Use contextlib.closing to ensure workbook is closed
+        with closing(pd.ExcelFile(unprotected_file, engine='openpyxl')) as workbook:
+            sheet_names = workbook.sheet_names
+            print(f"Available sheets: {sheet_names}")
 
-        if len(sheet_names) == 1:
-            chosen_sheet = sheet_names[0]
-            print(f"Only one sheet ('{chosen_sheet}') available, automatically selected.")
-        else:
-            chosen_sheet = input("Enter the name of the sheet to split: ").strip()
-            if chosen_sheet not in sheet_names:
-                print(f"Sheet '{chosen_sheet}' not found in the workbook. Please try again.")
+            if len(sheet_names) == 1:
+                chosen_sheet = sheet_names[0]
+                print(f"Only one sheet ('{chosen_sheet}') available, automatically selected.")
+            else:
+                chosen_sheet = input("Enter the name of the sheet to split: ").strip()
+                if chosen_sheet not in sheet_names:
+                    print(f"Sheet '{chosen_sheet}' not found in the workbook. Please try again.")
+                    return
+
+            # Read the specified sheet
+            df = pd.read_excel(unprotected_file, sheet_name=chosen_sheet, engine='openpyxl')
+            cols_name = df.columns.tolist()
+
+            # List columns with indices
+            print("Columns available for splitting:")
+            for index, col in enumerate(cols_name, 1):
+                print(f"{index}. {col}")
+
+            column_index = int(input('Enter the index number of the column to split by: '))
+            if column_index < 1 or column_index > len(cols_name):
+                print("Invalid column index. Please try again.")
                 return
 
-        # Read the specified sheet
-        df = pd.read_excel(unprotected_file, sheet_name=chosen_sheet, engine='openpyxl')
-        cols_name = df.columns.tolist()
+            column_name = cols_name[column_index - 1]
+            cols = df[column_name].unique()
+            print(f'Your data will be split based on these values in "{column_name}": {", ".join(map(str, cols))}.')
 
-        # List columns with indices
-        print("Columns available for splitting:")
-        for index, col in enumerate(cols_name, 1):
-            print(f"{index}. {col}")
-
-        column_index = int(input('Enter the index number of the column to split by: '))
-        if column_index < 1 or column_index > len(cols_name):
-            print("Invalid column index. Please try again.")
-            return
-
-        column_name = cols_name[column_index - 1]
-        cols = df[column_name].unique()
-        print(f'Your data will be split based on these values in "{column_name}": {", ".join(map(str, cols))}.')
-
-        split_type = input('Split into different Sheets or Files (S/F): ').lower()
-        if split_type == 'f':
-            send_to_file(df, cols, column_name, file, chosen_sheet)
-        elif split_type == 's':
-            send_to_sheet(df, cols, column_name, file, chosen_sheet)
-        else:
-            print("Invalid choice. Please enter 'S' for sheets or 'F' for files.")
+            split_type = input('Split into different Sheets or Files (S/F): ').lower()
+            if split_type == 'f':
+                send_to_file(df, cols, column_name, file, chosen_sheet)
+            elif split_type == 's':
+                send_to_sheet(df, cols, column_name, file, chosen_sheet)
+            else:
+                print("Invalid choice. Please enter 'S' for sheets or 'F' for files.")
     except Exception as e:
         print(f"An error occurred while splitting the file: {e}")
         traceback.print_exc()
