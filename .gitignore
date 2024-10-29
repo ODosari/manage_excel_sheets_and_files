@@ -7,4 +7,4 @@
 *.log
 *.xlsx
 /tests/*.xlsx
-/Test Results - .html
+!/Test Results - .html

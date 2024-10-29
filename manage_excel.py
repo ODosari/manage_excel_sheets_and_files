@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # Name = "Manage Excel Sheets and Files"
-# Version = "0.9"
+# Version = "0.1"
 # By = "Obaid Aldosari"
 # GitHub = "https://github.com/ODosari/manage_excel_sheets_and_files"
 
@@ -27,6 +27,12 @@ def print_help_message():
     print("S <file> - Split an Excel file into multiple sheets or files based on a column.")
     print("Q - Quit the program.")
     print("################################################################################")
+
+def print_commands():
+    print("\nAvailable commands:")
+    print("C <path> - Combine all Excel files in <path> into a single file.")
+    print("S <file> - Split an Excel file into multiple sheets or files based on a column.")
+    print("Q - Quit the program.")
 
 def get_timestamped_filename(base_path, prefix, extension):
     timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -93,11 +99,17 @@ def combine_excel_files(path):
                 else:
                     print("Invalid input. Please enter valid file numbers or 'all'. Type 'Q' to cancel.")
 
+        while True:
+            choice = input("Combine into one sheet (O) or into one workbook with different sheets (W)? (Type 'Q' to cancel): ").lower()
+            if choice == 'q':
+                print("Operation cancelled by the user.")
+                return
+            elif choice in ['o', 'w']:
+                break
+            else:
+                print("Invalid choice. Please enter 'O', 'W', or 'Q' to cancel.")
+
         output_file = get_timestamped_filename(path, 'Combined', '.xlsx')
-        choice = input("Combine into one sheet (O) or into one workbook with different sheets (W)? (Type 'Q' to cancel): ").lower()
-        if choice == 'q':
-            print("Operation cancelled by the user.")
-            return
 
         if choice == 'o':
             combined_df = pd.DataFrame()
@@ -117,15 +129,15 @@ def combine_excel_files(path):
                             # Normalize the sheet name to create unique names
                             safe_sheet_name = f"{os.path.splitext(os.path.basename(file))[0]}_{sheet_name}".replace(' ', '_')[:31]
                             df.to_excel(writer, sheet_name=safe_sheet_name, index=False)
-        else:
-            print("Invalid choice. Please enter 'O' or 'W'.")
-            return
 
         print(f'Files combined successfully. Output File: {os.path.basename(output_file)}')
 
     except Exception as e:
         print(f"An error occurred while combining files: {e}")
         traceback.print_exc()
+    finally:
+        # Ensure that after combining, we return to the main menu
+        pass  # The function will return naturally
 
 def choose_sheet_from_file(file):
     unprotected_file = None
@@ -149,7 +161,7 @@ def choose_sheet_from_file(file):
                     return [(sheet_names[0], df)]
                 else:
                     print("\nType 'all' to select all sheets or 'Q' to skip this file.")
-                    chosen_input = input(f"Enter the index numbers of the sheets to combine from {os.path.basename(file)} (separated by commas), 'all', or 'Q' to skip: ").strip()
+                    chosen_input = input(f"Enter the index numbers of the sheets to select from {os.path.basename(file)} (separated by commas), 'all', or 'Q' to skip: ").strip()
                     if chosen_input.lower() == 'q':
                         print(f"Skipping file {os.path.basename(file)}.")
                         return None
@@ -190,13 +202,11 @@ def choose_sheet_from_file(file):
 def split_excel_file(file):
     unprotected_file = None
     try:
-        # For .xlsx files
         unprotected_file = unprotect_excel_file(file)
         if unprotected_file is None:
             return
 
         while True:
-            # Use contextlib.closing to ensure workbook is closed
             with closing(pd.ExcelFile(unprotected_file, engine='openpyxl')) as workbook:
                 sheet_names = workbook.sheet_names
                 print(f"\nAvailable sheets in {os.path.basename(file)}:")
@@ -222,17 +232,15 @@ def split_excel_file(file):
                         print("Invalid index number. Please try again or type 'Q' to skip.")
                         continue
 
-                # Read the specified sheet
                 df = pd.read_excel(unprotected_file, sheet_name=chosen_sheet, engine='openpyxl')
                 cols_name = df.columns.tolist()
 
-                # List columns with indices
                 print("\nColumns available for splitting:")
                 for index, col in enumerate(cols_name, 1):
                     print(f"{index}. {col}")
 
                 while True:
-                    column_input = input('Enter the index number of the column to split by (or type "Q" to skip): ').strip()
+                    column_input = input("Enter the index number of the column to split by (or type 'Q' to skip): ").strip()
                     if column_input.lower() == 'q':
                         print("Skipping splitting operation.")
                         return
@@ -249,18 +257,24 @@ def split_excel_file(file):
                 cols = df[column_name].unique()
                 print(f'Your data will be split based on these values in "{column_name}": {", ".join(map(str, cols))}.')
 
-                split_type = input(f'Split into different Sheets or Files (S/F)? (Type "Q" to skip): ').lower()
-                if split_type == 'q':
-                    print("Skipping splitting operation.")
-                    return
-                elif split_type == 'f':
-                    send_to_file(df, cols, column_name, file, chosen_sheet)
-                elif split_type == 's':
-                    send_to_sheet(df, cols, column_name, file, chosen_sheet)
-                else:
-                    print("Invalid choice. Please enter 'S', 'F', or 'Q' to skip.")
-                    continue
+                while True:
+                    split_type = input("Split into different Sheets or Files (S/F)? (Type 'Q' to skip): ").lower()
+                    if split_type == 'q':
+                        print("Skipping splitting operation.")
+                        return
+                    elif split_type == 'f':
+                        send_to_file(df, cols, column_name, file, chosen_sheet)
+                        break
+                    elif split_type == 's':
+                        send_to_sheet(df, cols, column_name, file, chosen_sheet)
+                        break
+                    else:
+                        print("Invalid choice. Please enter 'S', 'F', or 'Q' to skip.")
+
+                # After successful splitting, break out of the while loop
                 break
+
+        # Return to main menu after operation
     except Exception as e:
         print(f"An error occurred while splitting the file: {e}")
         traceback.print_exc()
@@ -295,9 +309,13 @@ def send_to_sheet(df, cols, column_name, file, sheet_name):
 def interactive_mode():
     print_help_message()
     while True:
+        print_commands()
         user_input = input("Enter your command: ").strip()
         if user_input.lower() == 'q':
             break
+        elif user_input.lower() == 'help':
+            print_help_message()
+            continue
         elif user_input.startswith(('C ', 'c ', 'S ', 's ')):
             parts = user_input.strip().split(maxsplit=1)
             if len(parts) < 2:
