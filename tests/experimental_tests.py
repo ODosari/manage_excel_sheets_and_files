@@ -1,433 +1,456 @@
 #!/usr/bin/env python3
+"""
+Manage Excel Sheets and Files Utility
 
-# Name = "Manage Excel Sheets and Files"
-# Version = "1.6"
-# By = "Obaid Aldosari"
-# GitHub = "https://github.com/ODosari/manage_excel_sheets_and_files"
+This script allows you to combine multiple Excel files into one,
+or split a single Excel file into multiple sheets or files based on a specific column.
+It includes enhanced handling for password-protected files.
+
+Version = "0.2"
+By = "Obaid Aldosari"
+GitHub: https://github.com/ODosari/manage_excel_sheets_and_files
+"""
 
 import os
-import pandas as pd
+import sys
 import time
 import glob
-from openpyxl import load_workbook
-import tempfile
-import msoffcrypto
-import io
-from contextlib import closing
 import logging
+import argparse
+import tempfile
+import io
+import traceback
+from contextlib import closing
 
-# Configure logging
-logging.basicConfig(filename='excel_manager.log', level=logging.ERROR,
-                    format='%(asctime)s:%(levelname)s:%(message)s')
+import pandas as pd
+import msoffcrypto
+from openpyxl import load_workbook
+from msoffcrypto.exceptions import InvalidKeyError
 
+# Configure logging with two handlers:
+# - A file handler to log detailed INFO messages.
+# - A console handler to show only warnings and errors.
+logger = logging.getLogger()
+logger.setLevel(logging.DEBUG)
 
-def print_welcome_message():
-    print("################################################################################")
-    print("Welcome to the Manage Excel Sheets and Files Utility!")
-    print("This utility allows you to combine multiple Excel/CSV files into one,")
-    print("or split a single Excel/CSV file into multiple sheets or files based on a specific column.")
-    print("################################################################################")
+# File handler: logs INFO and above to 'manage_excel.log'
+file_handler = logging.FileHandler("manage_excel.log")
+file_handler.setLevel(logging.INFO)
+file_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S")
+file_handler.setFormatter(file_formatter)
+logger.addHandler(file_handler)
 
-
-def print_main_menu():
-    print("\nMain Menu:")
-    print("1. Combine Excel/CSV files")
-    print("2. Split an Excel/CSV file")
-    print("3. Help")
-    print("4. Quit")
+# Console handler: logs only WARNING and above to stderr
+console_handler = logging.StreamHandler(sys.stderr)
+console_handler.setLevel(logging.WARNING)
+console_formatter = logging.Formatter("%(levelname)s: %(message)s")
+console_handler.setFormatter(console_formatter)
+logger.addHandler(console_handler)
 
 
 def print_help_message():
-    print("\nHelp:")
-    print("This utility supports the following operations:")
-    print("1. Combine multiple Excel/CSV files into one file.")
-    print("   - Files can be combined into one sheet or into a workbook with multiple sheets.")
-    print("2. Split a single Excel/CSV file into multiple sheets or files based on a column.")
-    print("\nSupported file formats: .xlsx, .xls, .csv")
-    print("You can specify an output directory for the resulting files.")
-    print("Password-protected Excel files are supported. You will be prompted for passwords if necessary.")
-    print("\nAt any prompt, you can type 'Q' to cancel the current operation and return to the main menu.\n")
+    """
+    Prints the help message explaining the utility and its commands.
+    """
+    help_message = """
+################################################################################
+Welcome to Manage Excel Sheets and Files Utility!
+
+This utility allows you to combine multiple Excel files into one,
+or split a single Excel file into multiple sheets or files based on a specific column.
+
+Commands:
+  C <path> - Combine all Excel files in <path> into a single file.
+  S <file> - Split an Excel file into multiple sheets or files based on a column.
+  Q      - Quit the program.
+################################################################################
+"""
+    print(help_message)
+
+
+def print_commands():
+    """
+    Prints the available commands.
+    """
+    commands = """
+Available commands:
+  C <path> - Combine all Excel files in <path> into a single file.
+  S <file> - Split an Excel file into multiple sheets or files based on a column.
+  Q      - Quit the program.
+"""
+    print(commands)
 
 
 def get_timestamped_filename(base_path, prefix, extension):
+    """
+    Generate a unique filename using a timestamp.
+    """
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     return os.path.join(base_path, f'{prefix}_{timestamp}{extension}')
 
 
-def unprotect_excel_file(file, password=None):
+def normalize_sheet_name(base_name, sheet_name, existing_names):
+    """
+    Generate a safe Excel sheet name by combining the base file name and sheet name,
+    replacing spaces with underscores and truncating to 31 characters. If the generated
+    name already exists, appends a counter.
+    """
+    raw_name = f"{base_name}_{sheet_name}".replace(" ", "_")
+    safe_name = raw_name[:31]
+    counter = 1
+    while safe_name in existing_names:
+        suffix = f"_{counter}"
+        safe_name = (raw_name[:31 - len(suffix)] + suffix)
+        counter += 1
+    existing_names.add(safe_name)
+    return safe_name
+
+
+def unprotect_excel_file(file_path, default_password=None, max_attempts=3):
+    """
+    Unprotects an Excel file (if encrypted or protected) and returns a path
+    to a temporary unprotected copy.
+    Supports using a default password and up to max_attempts attempts.
+    """
     try:
-        with open(file, 'rb') as f:
+        with open(file_path, 'rb') as f:
             office_file = msoffcrypto.OfficeFile(f)
             if office_file.is_encrypted():
-                if not password:
-                    password = input(f"Enter password for {os.path.basename(file)}: ")
-                    if password.lower() == 'q':
-                        print(f"Skipping file {os.path.basename(file)}.")
-                        return None
-                decrypted = io.BytesIO()
-                office_file.load_key(password=password)
-                office_file.decrypt(decrypted)
-                decrypted.seek(0)
-                wb = load_workbook(decrypted, read_only=False, keep_vba=True, data_only=False, keep_links=False)
+                attempts = 0
+                password = default_password
+                while attempts < max_attempts:
+                    try:
+                        if password is None:
+                            password = input(f"Enter password for {os.path.basename(file_path)}: ")
+                        decrypted = io.BytesIO()
+                        office_file.load_key(password=password)
+                        office_file.decrypt(decrypted)
+                        decrypted.seek(0)
+                        wb = load_workbook(decrypted, read_only=False, keep_vba=True)
+                        logger.info(f"Password accepted for {os.path.basename(file_path)}")
+                        break
+                    except InvalidKeyError as ike:
+                        attempts += 1
+                        logger.error(f"Incorrect password for {os.path.basename(file_path)} (Attempt {attempts}/{max_attempts}): {ike}")
+                        if attempts < max_attempts:
+                            password = None
+                        else:
+                            raise Exception("Maximum password attempts reached.") from ike
             else:
-                # File is not encrypted
-                wb = load_workbook(file, read_only=False, keep_vba=True, data_only=False, keep_links=False)
+                wb = load_workbook(file_path, read_only=False, keep_vba=True)
 
-        # Unprotect workbook and sheets
         wb.security = None
         for sheet in wb.worksheets:
             sheet.protection.enabled = False
             sheet.protection.sheet = False
 
-        # Save to a temporary file
-        temp = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
-        wb.save(temp.name)
-        temp.close()
-        return temp.name
+        temp_file = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
+        wb.save(temp_file.name)
+        temp_file.close()
+        logger.debug(f"Unprotected file saved to temporary file: {temp_file.name}")
+        return temp_file.name
+
     except Exception as e:
-        print(f"Failed to open {os.path.basename(file)}: {e}")
-        logging.error(f"Failed to unprotect {file}: {e}")
+        logger.error(f"Failed to open {os.path.basename(file_path)}: {e}")
+        traceback.print_exc()
         return None
 
 
-def combine_excel_files():
+def choose_sheet_from_file(file_path, default_password=None):
+    """
+    Allows the user to choose which sheet(s) to work with from an Excel file.
+    """
+    temp_file = None
     try:
-        path = input("Enter the directory path containing Excel/CSV files to combine: ").strip()
-        if path.lower() == 'q':
-            print("Operation cancelled. Returning to main menu.")
-            return
-        if not os.path.isdir(path):
-            print("Invalid directory path. Please try again.")
-            return
+        temp_file = unprotect_excel_file(file_path, default_password=default_password)
+        if temp_file is None:
+            return None
 
-        files = glob.glob(os.path.join(path, '*.xlsx')) + glob.glob(os.path.join(path, '*.xls')) + glob.glob(os.path.join(path, '*.csv'))
-        if not files:
-            print("No Excel or CSV files found in the directory.")
-            return
-
-        print("\nFound the following files:")
-        for i, file in enumerate(files, 1):
-            print(f"{i}. {os.path.basename(file)}")
-        print("\nType 'all' to select all files or enter the numbers separated by commas.")
-
-        selected_files = []
         while True:
-            selected_files_idx = input("Enter your choice: ").strip()
-            if selected_files_idx.lower() == 'q':
-                print("Operation cancelled. Returning to main menu.")
+            with closing(pd.ExcelFile(temp_file, engine='openpyxl')) as workbook:
+                sheet_names = workbook.sheet_names
+                print(f"\nAvailable sheets in {os.path.basename(file_path)}:")
+                for idx, sheet in enumerate(sheet_names, start=1):
+                    print(f"  {idx}. {sheet}")
+
+                if len(sheet_names) == 1:
+                    logger.info(f"Only one sheet available ('{sheet_names[0]}'), automatically selecting it.")
+                    df = pd.read_excel(temp_file, sheet_name=sheet_names[0], engine='openpyxl')
+                    return [(sheet_names[0], df)]
+                else:
+                    print("\nType 'all' to select all sheets or 'Q' to skip this file.")
+                    user_choice = input(f"Enter the index numbers of the sheets to select from {os.path.basename(file_path)} (separated by commas), 'all', or 'Q' to skip: ").strip()
+                    if user_choice.lower() == 'q':
+                        logger.info(f"Skipping file {os.path.basename(file_path)}.")
+                        return None
+                    elif user_choice.lower() == 'all':
+                        return [(sheet, pd.read_excel(temp_file, sheet_name=sheet, engine='openpyxl')) for sheet in sheet_names]
+                    else:
+                        indices = user_choice.split(',')
+                        selected = []
+                        for idx in indices:
+                            idx = idx.strip()
+                            if idx.isdigit():
+                                index = int(idx)
+                                if 1 <= index <= len(sheet_names):
+                                    sheet_name = sheet_names[index - 1]
+                                    df = pd.read_excel(temp_file, sheet_name=sheet_name, engine='openpyxl')
+                                    selected.append((sheet_name, df))
+                                else:
+                                    print(f"Invalid index number: {index}.")
+                            else:
+                                print(f"Invalid input: {idx}. Please enter numbers only.")
+                        if selected:
+                            return selected
+                        else:
+                            print("No valid sheets selected. Please try again or type 'Q' to skip this file.")
+    except Exception as e:
+        logger.error(f"Error reading file {os.path.basename(file_path)}: {e}")
+        traceback.print_exc()
+        return None
+    finally:
+        if temp_file and os.path.exists(temp_file):
+            os.unlink(temp_file)
+
+
+def combine_excel_files(directory_path, default_password=None):
+    """
+    Combines selected Excel files from the specified directory.
+    """
+    try:
+        logger.info("Searching for Excel files...")
+        files = glob.glob(os.path.join(directory_path, '*.xlsx'))
+        if not files:
+            logger.warning("No Excel files found in the directory.")
+            return
+
+        logger.info("Found the following Excel files:")
+        for i, file_path in enumerate(files, 1):
+            logger.info(f"  {i}. {os.path.basename(file_path)}")
+        print("Type 'all' to select all files.")
+
+        while True:
+            selected_input = input("Enter the numbers of the files to combine (separated by commas) or type 'all': ").strip()
+            if selected_input.lower() == 'q':
+                logger.info("Operation cancelled by the user.")
                 return
-            if selected_files_idx.lower() == 'all':
+            if selected_input.lower() == 'all':
                 selected_files = files
                 break
             else:
-                indices = [i.strip() for i in selected_files_idx.split(',')]
+                indices = [i.strip() for i in selected_input.split(',')]
                 if all(idx.isdigit() and 1 <= int(idx) <= len(files) for idx in indices):
                     selected_files = [files[int(i) - 1] for i in indices]
                     break
                 else:
-                    print("Invalid input. Please enter valid file numbers separated by commas, 'all', or 'Q' to cancel.")
-
-        password_dict = {}
-        for file in selected_files.copy():
-            if file.endswith(('.xlsx', '.xls')):
-                if is_file_encrypted(file):
-                    print(f"File {os.path.basename(file)} is encrypted.")
-                    password = input(f"Enter password for {os.path.basename(file)} (or 'Q' to skip): ").strip()
-                    if password.lower() == 'q':
-                        print(f"Skipping encrypted file {os.path.basename(file)} due to missing password.")
-                        selected_files.remove(file)
-                    else:
-                        password_dict[file] = password
+                    print("Invalid input. Please enter valid file numbers or 'all'. (Type 'Q' to cancel)")
 
         while True:
-            choice = input("Combine into one sheet (O) or into one workbook with different sheets (W)? [O/W]: ").lower()
+            choice = input("Combine into one sheet (O) or into one workbook with different sheets (W)? (Type 'Q' to cancel): ").lower()
             if choice == 'q':
-                print("Operation cancelled. Returning to main menu.")
+                logger.info("Operation cancelled by the user.")
                 return
             elif choice in ['o', 'w']:
                 break
             else:
-                print("Invalid choice. Please enter 'O' or 'W'. Type 'Q' to cancel.")
+                print("Invalid choice. Please enter 'O', 'W', or 'Q' to cancel.")
 
-        output_dir = input("Enter output directory (leave blank for current directory): ").strip()
-        if output_dir.lower() == 'q':
-            print("Operation cancelled. Returning to main menu.")
-            return
-        if not output_dir:
-            output_dir = path
-        elif not os.path.isdir(output_dir):
-            print("Invalid output directory. Using current directory.")
-            output_dir = path
+        output_file = get_timestamped_filename(directory_path, 'Combined', '.xlsx')
+        base_names_used = set()
 
-        output_file = get_timestamped_filename(output_dir, 'Combined', '.xlsx')
-
-        print("Processing files...")
         if choice == 'o':
             combined_df = pd.DataFrame()
-            for file in selected_files:
-                df_list = choose_sheet_from_file(file, password_dict.get(file))
-                if df_list is not None:
-                    for sheet_name, df in df_list:
-                        combined_df = pd.concat([combined_df, df], ignore_index=True)
-            if not combined_df.empty:
-                combined_df.to_excel(output_file, sheet_name='Combined', engine='openpyxl', index=False)
-                print(f'Files combined successfully into one sheet. Output File: {os.path.basename(output_file)}')
-            else:
-                print("No data to combine. Operation aborted.")
+            for file_path in selected_files:
+                df_list = choose_sheet_from_file(file_path, default_password=default_password) or []
+                for sheet_name, df in df_list:
+                    combined_df = pd.concat([combined_df, df], ignore_index=True)
+            combined_df.to_excel(output_file, sheet_name='Combined', engine='openpyxl', index=False)
         elif choice == 'w':
             with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-                for file in selected_files:
-                    df_list = choose_sheet_from_file(file, password_dict.get(file))
-                    if df_list is not None:
-                        for sheet_name, df in df_list:
-                            safe_sheet_name = f"{os.path.splitext(os.path.basename(file))[0]}_{sheet_name}".replace(' ', '_')[:31]
-                            df.to_excel(writer, sheet_name=safe_sheet_name, index=False)
-            print(f'Files combined successfully into one workbook with multiple sheets. Output File: {os.path.basename(output_file)}')
+                for file_path in selected_files:
+                    base_name = os.path.splitext(os.path.basename(file_path))[0]
+                    df_list = choose_sheet_from_file(file_path, default_password=default_password) or []
+                    for sheet_name, df in df_list:
+                        safe_sheet = normalize_sheet_name(base_name, sheet_name, base_names_used)
+                        df.to_excel(writer, sheet_name=safe_sheet, index=False)
+
+        logger.info(f"Files combined successfully. Output File: {os.path.basename(output_file)}")
 
     except Exception as e:
-        print(f"An error occurred while combining files: {e}")
-        logging.error(f"Error in combine_excel_files: {e}")
-    finally:
-        pass
+        logger.error(f"An error occurred while combining files: {e}")
+        traceback.print_exc()
 
 
-def is_file_encrypted(file):
+def split_excel_file(file_path, default_password=None):
+    """
+    Splits an Excel file into multiple files or sheets based on a column's unique values.
+    """
+    temp_file = None
     try:
-        with open(file, 'rb') as f:
-            office_file = msoffcrypto.OfficeFile(f)
-            return office_file.is_encrypted()
-    except Exception:
-        return False
+        temp_file = unprotect_excel_file(file_path, default_password=default_password)
+        if temp_file is None:
+            return
 
-
-def choose_sheet_from_file(file, password=None):
-    unprotected_file = None
-    try:
-        # For .xlsx and .xls files
-        if file.endswith(('.xlsx', '.xls')):
-            unprotected_file = unprotect_excel_file(file, password)
-            if unprotected_file is None:
-                return None
-
-            with closing(pd.ExcelFile(unprotected_file, engine='openpyxl')) as workbook:
+        while True:
+            with closing(pd.ExcelFile(temp_file, engine='openpyxl')) as workbook:
                 sheet_names = workbook.sheet_names
-                if not sheet_names:
-                    print(f"No sheets found in {os.path.basename(file)}.")
-                    return None
+                print(f"\nAvailable sheets in {os.path.basename(file_path)}:")
+                for idx, sheet in enumerate(sheet_names, start=1):
+                    print(f"  {idx}. {sheet}")
+
                 if len(sheet_names) == 1:
-                    chosen_sheets = [sheet_names[0]]
-                    print(f"\nOnly one sheet ('{sheet_names[0]}') available in {os.path.basename(file)}, automatically selected.")
+                    chosen_sheet = sheet_names[0]
+                    logger.info(f"Only one sheet ('{chosen_sheet}') available, automatically selecting it.")
                 else:
-                    print(f"\nAvailable sheets in {os.path.basename(file)}:")
-                    for idx, sheet_name in enumerate(sheet_names, start=1):
-                        print(f"{idx}. {sheet_name}")
-
-                    print("\nType 'all' to select all sheets or enter the numbers separated by commas.")
-                    while True:
-                        chosen_input = input(f"Enter your choice for {os.path.basename(file)}: ").strip()
-                        if chosen_input.lower() == 'q':
-                            print(f"Skipping file {os.path.basename(file)}.")
-                            return None
-                        elif chosen_input.lower() == 'all':
-                            chosen_sheets = sheet_names
-                            break
-                        else:
-                            indices = chosen_input.split(',')
-                            if all(idx.strip().isdigit() and 1 <= int(idx.strip()) <= len(sheet_names) for idx in indices):
-                                chosen_sheets = [sheet_names[int(idx.strip()) - 1] for idx in indices]
-                                break
-                            else:
-                                print("Invalid input. Please enter valid sheet numbers separated by commas, 'all', or 'Q' to skip.")
-
-                df_list = []
-                for sheet in chosen_sheets:
-                    df = pd.read_excel(unprotected_file, sheet_name=sheet, engine='openpyxl')
-                    df_list.append((sheet, df))
-                return df_list
-
-        elif file.endswith('.csv'):
-            df = pd.read_csv(file)
-            return [(os.path.basename(file), df)]
-        else:
-            print(f"Unsupported file format for file {os.path.basename(file)}.")
-            return None
-
-    except Exception as e:
-        print(f"Error reading file {os.path.basename(file)}: {e}")
-        logging.error(f"Error in choose_sheet_from_file for {file}: {e}")
-        return None
-    finally:
-        if unprotected_file and os.path.exists(unprotected_file):
-            os.unlink(unprotected_file)
-
-
-def split_excel_file():
-    try:
-        file = input("Enter the path of the Excel/CSV file to split: ").strip()
-        if file.lower() == 'q':
-            print("Operation cancelled. Returning to main menu.")
-            return
-        if not os.path.isfile(file):
-            print("File not found. Please try again.")
-            return
-
-        output_dir = input("Enter output directory (leave blank for same directory as input file): ").strip()
-        if output_dir.lower() == 'q':
-            print("Operation cancelled. Returning to main menu.")
-            return
-        if not output_dir:
-            output_dir = os.path.dirname(file)
-        elif not os.path.isdir(output_dir):
-            print("Invalid output directory. Using same directory as input file.")
-            output_dir = os.path.dirname(file)
-
-        if file.endswith(('.xlsx', '.xls')):
-            if is_file_encrypted(file):
-                password = input(f"Enter password for {os.path.basename(file)} (or 'Q' to cancel): ").strip()
-                if password.lower() == 'q':
-                    print("Operation cancelled. Returning to main menu.")
-                    return
-                unprotected_file = unprotect_excel_file(file, password)
-            else:
-                unprotected_file = unprotect_excel_file(file)
-            if unprotected_file is None:
-                return
-
-            workbook_path = unprotected_file
-            engine = 'openpyxl'
-        elif file.endswith('.csv'):
-            workbook_path = file
-            engine = None
-        else:
-            print(f"Unsupported file format: {os.path.basename(file)}.")
-            return
-
-        with closing(pd.ExcelFile(workbook_path, engine=engine)) as workbook:
-            sheet_names = workbook.sheet_names if engine else [os.path.basename(file)]
-            if not sheet_names:
-                print(f"No sheets found in {os.path.basename(file)}.")
-                return
-            if len(sheet_names) == 1:
-                chosen_sheet = sheet_names[0]
-                print(f"\nOnly one sheet ('{chosen_sheet}') available in {os.path.basename(file)}, automatically selected.")
-            else:
-                print(f"\nAvailable sheets in {os.path.basename(file)}:")
-                for idx, sheet_name in enumerate(sheet_names, start=1):
-                    print(f"{idx}. {sheet_name}")
-                while True:
-                    chosen_input = input(f"Enter the number of the sheet to split from {os.path.basename(file)}: ").strip()
+                    print("Type 'Q' to skip this file.")
+                    chosen_input = input(f"Enter the index number of the sheet to split from {os.path.basename(file_path)}: ").strip()
                     if chosen_input.lower() == 'q':
-                        print("Operation cancelled. Returning to main menu.")
+                        logger.info(f"Skipping file {os.path.basename(file_path)}.")
                         return
-                    if chosen_input.isdigit() and 1 <= int(chosen_input) <= len(sheet_names):
-                        chosen_sheet = sheet_names[int(chosen_input) - 1]
+                    if not chosen_input.isdigit():
+                        print("Invalid input. Please enter a valid index number or 'Q' to skip.")
+                        continue
+                    index = int(chosen_input)
+                    if 1 <= index <= len(sheet_names):
+                        chosen_sheet = sheet_names[index - 1]
+                    else:
+                        print("Invalid index number. Please try again or type 'Q' to skip.")
+                        continue
+
+                df = pd.read_excel(temp_file, sheet_name=chosen_sheet, engine='openpyxl')
+                columns = df.columns.tolist()
+
+                print("\nColumns available for splitting:")
+                for index, col in enumerate(columns, 1):
+                    print(f"  {index}. {col}")
+
+                while True:
+                    col_input = input("Enter the index number of the column to split by (or type 'Q' to skip): ").strip()
+                    if col_input.lower() == 'q':
+                        logger.info("Skipping splitting operation.")
+                        return
+                    if not col_input.isdigit():
+                        print("Invalid input. Please enter a number or 'Q' to skip.")
+                        continue
+                    col_index = int(col_input)
+                    if 1 <= col_index <= len(columns):
                         break
                     else:
-                        print("Invalid input. Please enter a valid sheet number or 'Q' to cancel.")
+                        print("Invalid column index. Please try again or type 'Q' to skip.")
 
-        if engine:
-            df = pd.read_excel(workbook_path, sheet_name=chosen_sheet, engine=engine)
-        else:
-            df = pd.read_csv(workbook_path)
+                split_column = columns[col_index - 1]
+                unique_values = df[split_column].unique()
+                logger.info(f"Data will be split based on the values in column '{split_column}': {', '.join(map(str, unique_values))}")
 
-        cols_name = df.columns.tolist()
-        if not cols_name:
-            print("No columns found in the selected sheet.")
-            return
-
-        print("\nColumns available for splitting:")
-        for index, col in enumerate(cols_name, 1):
-            print(f"{index}. {col}")
-
-        while True:
-            column_input = input("Enter the number of the column to split by: ").strip()
-            if column_input.lower() == 'q':
-                print("Operation cancelled. Returning to main menu.")
-                return
-            if column_input.isdigit() and 1 <= int(column_input) <= len(cols_name):
-                column_index = int(column_input)
+                while True:
+                    split_type = input("Split into different Sheets or Files (S/F)? (Type 'Q' to skip): ").lower()
+                    if split_type == 'q':
+                        logger.info("Skipping splitting operation.")
+                        return
+                    elif split_type == 'f':
+                        send_to_file(df, unique_values, split_column, file_path, chosen_sheet)
+                        break
+                    elif split_type == 's':
+                        send_to_sheet(df, unique_values, split_column, file_path, chosen_sheet)
+                        break
+                    else:
+                        print("Invalid choice. Please enter 'S', 'F', or 'Q' to skip.")
                 break
-            else:
-                print("Invalid input. Please enter a valid column number or 'Q' to cancel.")
-
-        column_name = cols_name[column_index - 1]
-        cols = df[column_name].dropna().unique()
-        if cols.size <= 1:
-            print(f"Not enough unique values found in column '{column_name}'. Cannot split.")
-            return
-        print(f'\nYour data will be split based on these values in "{column_name}": {", ".join(map(str, cols))}.')
-
-        while True:
-            split_type = input("Split into different Sheets or Files? [S/F]: ").lower()
-            if split_type == 'q':
-                print("Operation cancelled. Returning to main menu.")
-                return
-            elif split_type in ['s', 'f']:
-                break
-            else:
-                print("Invalid choice. Please enter 'S' or 'F'. Type 'Q' to cancel.")
-
-        print("Processing split...")
-        if split_type == 'f':
-            send_to_file(df, cols, column_name, file, chosen_sheet, output_dir)
-        elif split_type == 's':
-            send_to_sheet(df, cols, column_name, file, chosen_sheet, output_dir)
-
-        print("Splitting completed successfully.")
 
     except Exception as e:
-        print(f"An error occurred while splitting the file: {e}")
-        logging.error(f"Error in split_excel_file: {e}")
+        logger.error(f"An error occurred while splitting the file: {e}")
+        traceback.print_exc()
     finally:
-        if 'unprotected_file' in locals() and os.path.exists(unprotected_file):
-            os.unlink(unprotected_file)
+        if temp_file and os.path.exists(temp_file):
+            os.unlink(temp_file)
 
 
-def send_to_file(df, cols, column_name, file, sheet_name, output_dir):
-    try:
-        base_filename = f"{os.path.splitext(os.path.basename(file))[0]}_{sheet_name}"
+def send_to_file(df, unique_values, split_column, original_file, sheet_name):
+    """
+    Splits the DataFrame into separate files based on unique values in a column.
+    """
+    directory = os.path.dirname(original_file)
+    base_filename = f"{os.path.splitext(os.path.basename(original_file))[0]}_{sheet_name}"
+    os.makedirs(directory, exist_ok=True)
 
-        os.makedirs(output_dir, exist_ok=True)
-
-        for value in cols:
-            output_file = get_timestamped_filename(output_dir, f'{base_filename}_{column_name}_{value}', '.xlsx')
-            df_subset = df[df[column_name] == value]
-            df_subset.to_excel(output_file, sheet_name=str(value), engine='openpyxl', index=False)
-    except Exception as e:
-        print(f"An error occurred while saving split files: {e}")
-        logging.error(f"Error in send_to_file: {e}")
+    for value in unique_values:
+        safe_value = str(value).replace(" ", "_")
+        output_file = get_timestamped_filename(directory, f'{base_filename}_{split_column}_{safe_value}', '.xlsx')
+        filtered_df = df[df[split_column] == value]
+        filtered_df.to_excel(output_file, sheet_name=str(value)[:31], engine='openpyxl', index=False)
+        logger.info(f"Data for '{value}' written to {os.path.basename(output_file)}")
+    logger.info('Data split into files successfully.')
 
 
-def send_to_sheet(df, cols, column_name, file, sheet_name, output_dir):
-    try:
-        output_file = get_timestamped_filename(output_dir, f'{os.path.splitext(os.path.basename(file))[0]}_{sheet_name}_split', '.xlsx')
+def send_to_sheet(df, unique_values, split_column, original_file, sheet_name):
+    """
+    Splits the DataFrame into separate sheets in one workbook based on unique values in a column.
+    """
+    directory = os.path.dirname(original_file)
+    output_file = get_timestamped_filename(directory, f'{os.path.splitext(os.path.basename(original_file))[0]}_{sheet_name}_split', '.xlsx')
 
-        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-            for value in cols:
-                sn = str(value)[:31]  # Excel sheet name limit is 31 characters
-                filtered_df = df[df[column_name] == value]
-                filtered_df.to_excel(writer, sheet_name=sn, index=False)
-    except Exception as e:
-        print(f"An error occurred while saving split sheets: {e}")
-        logging.error(f"Error in send_to_sheet: {e}")
+    existing_sheet_names = set()
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        for value in unique_values:
+            raw_sheet_name = str(value)
+            safe_sheet = normalize_sheet_name(raw_sheet_name, "", existing_sheet_names) if raw_sheet_name.strip() else "Empty"
+            filtered_df = df[df[split_column] == value]
+            filtered_df.to_excel(writer, sheet_name=safe_sheet, index=False)
+    logger.info(f"Data split into sheets successfully. Output File: {os.path.basename(output_file)}")
+
+
+def interactive_mode(default_password=None):
+    """
+    Provides an interactive CLI mode for the user.
+    """
+    print_help_message()
+    while True:
+        print_commands()
+        user_input = input("Enter your command: ").strip()
+        if user_input.lower() == 'q':
+            logger.info("Exiting the program.")
+            break
+        elif user_input.lower() == 'help':
+            print_help_message()
+            continue
+        elif user_input.lower().startswith(('c ', 's ')):
+            parts = user_input.strip().split(maxsplit=1)
+            if len(parts) < 2:
+                print("Please provide a path or file after the command.")
+                continue
+            operation, path = parts
+            if operation.lower() == 'c':
+                combine_excel_files(path, default_password=default_password)
+            elif operation.lower() == 's':
+                split_excel_file(path, default_password=default_password)
+            else:
+                print("Invalid command. Type 'Q' to quit or 'help' for instructions.")
+        else:
+            print("Invalid command. Type 'Q' to quit or 'help' for instructions.")
+
+
+def parse_arguments():
+    """
+    Parses command-line arguments.
+    """
+    parser = argparse.ArgumentParser(description="Manage Excel Sheets and Files")
+    parser.add_argument('-c', '--combine', help='Path to combine Excel files')
+    parser.add_argument('-s', '--split', help='File to split into multiple sheets or files')
+    parser.add_argument('-p', '--password', help='Default password for password-protected files', default=None)
+    return parser.parse_args()
 
 
 def main():
-    print_welcome_message()
-    while True:
-        print_main_menu()
-        choice = input("Enter your choice: ").strip()
-        if choice == '1':
-            combine_excel_files()
-        elif choice == '2':
-            split_excel_file()
-        elif choice == '3':
-            print_help_message()
-        elif choice == '4' or choice.lower() == 'q':
-            print("Thank you for using the Manage Excel Sheets and Files Utility. Goodbye!")
-            break
-        else:
-            print("Invalid choice. Please select an option from the menu.")
+    """
+    Main entry point of the application.
+    """
+    args = parse_arguments()
+    if args.combine:
+        combine_excel_files(args.combine, default_password=args.password)
+    elif args.split:
+        split_excel_file(args.split, default_password=args.password)
+    else:
+        interactive_mode(default_password=args.password)
 
 
 if __name__ == "__main__":
