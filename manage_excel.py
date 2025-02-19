@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Manage Excel Sheets and Files Utility
+Manage Excel Sheets and Files Utility - CLI
 
 This script allows you to combine multiple Excel files into one,
 or split a single Excel file into multiple sheets or files based on a specific column.

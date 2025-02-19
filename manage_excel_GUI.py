@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Excel Manager GUI - Dark Theme with Green Accents, IBM Plex Mono 16 Font
+Manage Excel Sheets and Files Utility - GUI
 
-This script provides a modern Tkinter GUI for managing Excel files.
-It allows you to combine multiple Excel files or split a single Excel file
-based on a column value. Password-protected files are supported.
+This script allows you to combine multiple Excel files into one,
+or split a single Excel file into multiple sheets or files based on a specific column.
+It includes enhanced handling for password-protected files.
 
-Author: Obaid Aldosari (Enhanced by ChatGPT)
+Version = "0.2"
+Author: Obaid Aldosari
 GitHub: https://github.com/ODosari/manage_excel_sheets_and_files
 """
 
