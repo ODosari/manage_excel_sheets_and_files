@@ -54,12 +54,66 @@ def test_cli_combine_creates_output_and_respects_temp_dir():
         assert temp_dir.exists()
 
 
+def test_cli_combine_to_csv_format():
+    with runner.isolated_filesystem():
+        df1 = pd.DataFrame({"Customer": ["A"], "Amount": [10]})
+        df2 = pd.DataFrame({"Customer": ["B"], "Amount": [20]})
+        df1.to_excel("north.xlsx", index=False)
+        df2.to_excel("south.xlsx", index=False)
+
+        result = runner.invoke(
+            app,
+            [
+                "combine",
+                "north.xlsx",
+                "south.xlsx",
+                "--out",
+                "combined.csv",
+                "--format",
+                "csv",
+            ],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.stdout
+        payload = _read_json(result.stdout)
+        out_file = Path("combined.csv")
+        assert out_file.exists()
+        combined = pd.read_csv(out_file)
+        assert len(combined) == 2
+        assert payload["format"] == "csv"
+
+
+def test_cli_combine_dry_run_skips_output():
+    with runner.isolated_filesystem():
+        df1 = pd.DataFrame({"Customer": ["A"]})
+        df2 = pd.DataFrame({"Customer": ["B"]})
+        df1.to_excel("east.xlsx", index=False)
+        df2.to_excel("west.xlsx", index=False)
+
+        result = runner.invoke(
+            app,
+            [
+                "combine",
+                "east.xlsx",
+                "west.xlsx",
+                "--dry-run",
+            ],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.stdout
+        assert not Path("combined.xlsx").exists()
+        payload = _read_json(result.stdout)
+        assert payload["dry_run"] is True
+
+
 def test_cli_split_to_files_creates_directory_structure():
     with runner.isolated_filesystem():
         base = Path.cwd()
         df = pd.DataFrame(
             {
-                "Category": ["A", "B", "A"],
+                "Category": ["A/B", "A:B", "A/B"],
                 "Value": [1, 2, 3],
             }
         )
@@ -84,11 +138,69 @@ def test_cli_split_to_files_creates_directory_structure():
 
         assert result.exit_code == 0, result.stdout
         payload = _read_json(result.stdout)
-        a_file = Path("exports/items/A.xlsx")
-        b_file = Path("exports/items/B.xlsx")
+        a_file = Path("exports/items/A_B.xlsx")
+        b_file = Path("exports/items/A_B_2.xlsx")
         assert a_file.exists() and b_file.exists()
         assert payload["count"] == 2
-        assert pd.read_excel(a_file)["Category"].unique().tolist() == ["A"]
+        assert pd.read_excel(a_file)["Category"].unique().tolist() == ["A/B"]
+
+
+def test_cli_split_to_csv_format():
+    with runner.isolated_filesystem():
+        df = pd.DataFrame({"Category": ["A", "B"], "Value": [1, 2]})
+        df.to_excel("source.xlsx", index=False)
+
+        result = runner.invoke(
+            app,
+            [
+                "split",
+                "source.xlsx",
+                "--by",
+                "Category",
+                "--to",
+                "files",
+                "--out",
+                "exports",
+                "--format",
+                "csv",
+            ],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.stdout
+        payload = _read_json(result.stdout)
+        a_file = Path("exports/A.csv")
+        b_file = Path("exports/B.csv")
+        assert a_file.exists() and b_file.exists()
+        assert payload["format"] == "csv"
+        assert pd.read_csv(a_file)["Category"].tolist() == ["A"]
+
+
+def test_cli_split_to_sheets_derives_output_name():
+    with runner.isolated_filesystem():
+        df = pd.DataFrame({"Group": ["G1", "G2"], "Value": [1, 2]})
+        df.to_excel("mydata.xlsx", index=False)
+
+        result = runner.invoke(
+            app,
+            [
+                "split",
+                "mydata.xlsx",
+                "--by",
+                "Group",
+                "--to",
+                "sheets",
+                "--out",
+                "exports",
+            ],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.stdout
+        out_file = Path("exports/mydata_split.xlsx")
+        assert out_file.exists()
+        payload = _read_json(result.stdout)
+        assert payload["dry_run"] is False
 
 
 def test_cli_split_reports_missing_column_error():

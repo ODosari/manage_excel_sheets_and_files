@@ -10,3 +10,13 @@ def test_dedupe():
     b = dedupe("Data", s)
     assert a == "Data"
     assert b.startswith("Data_")
+
+
+def test_dedupe_truncates_when_max_length():
+    s: set[str] = set()
+    base = "x" * 31
+    first = dedupe(base, s)
+    second = dedupe(base, s)
+    assert first == base
+    assert second.endswith("_2")
+    assert len(second) <= 31

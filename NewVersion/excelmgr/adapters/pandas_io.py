@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from typing import Iterator, Mapping
 import pandas as pd
 from pathlib import Path
@@ -27,6 +28,13 @@ class PandasReader:
             return pd.read_excel(handle, sheet_name=sheet, engine=self.engine)
         except ValueError as e:
             raise SheetNotFound(str(e))
+
+    def read_workbook(self, path: str, password: str | None = None) -> Mapping[str, pd.DataFrame]:
+        handle = path
+        if password:
+            handle = unlock_to_stream(path, password)
+        with pd.ExcelFile(handle, engine=self.engine) as xf:
+            return {name: xf.parse(sheet_name=name) for name in xf.sheet_names}
 
     def iter_files(self, root: str, glob: str | None, recursive: bool) -> Iterator[str]:
         yield from _iter_files(root, glob or settings.glob, recursive)
@@ -61,3 +69,47 @@ class PandasWriter:
             with pd.ExcelWriter(f, engine=self.engine) as w:
                 for name, df in mapping.items():
                     df.to_excel(w, index=False, sheet_name=name)
+
+    @contextmanager
+    def stream_single_sheet(self, out_path: str, sheet_name: str = "Data"):
+        self._macro_policy(out_path)
+        self._ensure_parent_dir(out_path)
+
+        class _SheetAppender:
+            def __init__(self, excel_writer: pd.ExcelWriter, target: str) -> None:
+                self._writer = excel_writer
+                self._sheet = target
+                self._row = 0
+                self._header_written = False
+
+            def append(self, df: pd.DataFrame) -> None:
+                header = not self._header_written
+                to_write = df if not (header and df.empty) else df.head(0)
+                if to_write.empty and not header:
+                    return
+                to_write.to_excel(
+                    self._writer,
+                    index=False,
+                    sheet_name=self._sheet,
+                    startrow=self._row,
+                    header=header,
+                )
+                header_rows = 1 if header else 0
+                self._row += header_rows + len(to_write)
+                self._header_written = True
+
+            def finalize(self) -> None:
+                if not self._header_written:
+                    pd.DataFrame().to_excel(
+                        self._writer,
+                        index=False,
+                        sheet_name=self._sheet,
+                    )
+
+        with atomic_write(out_path, "wb", tmp_dir=settings.temp_dir) as (f, tmp):
+            with pd.ExcelWriter(f, engine=self.engine) as w:
+                appender = _SheetAppender(w, sheet_name)
+                try:
+                    yield appender
+                finally:
+                    appender.finalize()
