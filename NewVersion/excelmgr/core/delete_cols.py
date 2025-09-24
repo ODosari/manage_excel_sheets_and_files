@@ -1,15 +1,38 @@
 from __future__ import annotations
-
 import os
 import re
 from typing import Dict, List
 
 import pandas as pd
 
-from NewVersion.excelmgr.adapters.local_storage import iter_files
-from NewVersion.excelmgr.core.models import DeleteSpec
-from NewVersion.excelmgr.ports.readers import WorkbookReader
-from NewVersion.excelmgr.ports.writers import WorkbookWriter
+from excelmgr.adapters.local_storage import iter_files
+from excelmgr.core.errors import MissingColumnsError
+from excelmgr.core.models import DeleteSpec
+from excelmgr.ports.readers import WorkbookReader
+from excelmgr.ports.writers import WorkbookWriter
+
+
+def _plan_target_sheets(sheet_names: list[str], spec: DeleteSpec) -> list[tuple[str | int, str]]:
+    if not sheet_names:
+        return []
+
+    if spec.all_sheets:
+        return [(name, name) for name in sheet_names]
+
+    if spec.sheet_selector is None:
+        first = sheet_names[0]
+        return [(first, first)]
+
+    selector = spec.sheet_selector
+    if isinstance(selector, int):
+        if 0 <= selector < len(sheet_names):
+            display = sheet_names[selector]
+        else:
+            display = str(selector)
+        return [(selector, display)]
+
+    cleaned = str(selector)
+    return [(cleaned, cleaned)]
 
 
 def _match_columns(columns: List[str], spec: DeleteSpec) -> tuple[list[str], list[str]]:
@@ -73,31 +96,55 @@ def delete_columns(spec: DeleteSpec, reader: WorkbookReader, writer: WorkbookWri
         paths = [spec.path]
 
     summary = []
+    missing_records: list[dict] = []
     for p in paths:
         sheets = reader.sheet_names(p, spec.password)
-        target_sheets = sheets if spec.all_sheets or spec.sheet_selector is None else [spec.sheet_selector]
-        # read once
+        targets = _plan_target_sheets(sheets, spec)
         mapping: Dict[str, pd.DataFrame] = {}
         per_sheet = []
-        for s in target_sheets:
-            df = reader.read_sheet(p, s if s is not None else 0, spec.password)
+        for lookup, sheet_name in targets:
+            df = reader.read_sheet(p, lookup, spec.password)
             remove, missing = _match_columns(list(df.columns), spec)
             new_df = _apply(df, remove)
-            mapping[str(s)] = new_df
-            per_sheet.append({"sheet": str(s), "removed": remove, "missing": missing, "final_columns": list(new_df.columns)})
+            mapping[sheet_name] = new_df
+            per_sheet.append(
+                {
+                    "sheet": sheet_name,
+                    "removed": remove,
+                    "missing": missing,
+                    "final_columns": list(new_df.columns),
+                }
+            )
+            if spec.on_missing == "error" and missing:
+                missing_records.append({"path": p, "sheet": sheet_name, "missing": missing})
+
+        if missing_records and spec.on_missing == "error":
+            break
 
         if not spec.dry_run:
             out = p if spec.inplace else _build_out_path(p)
-            # For untouched sheets (when not all_sheets), keep originals
-            if spec.sheet_selector is not None and not spec.all_sheets:
-                for s in sheets:
-                    if str(s) not in mapping and s != spec.sheet_selector:
-                        mapping[str(s)] = reader.read_sheet(p, s, spec.password)
-            writer.write_multi_sheets(mapping, out)
+            if spec.all_sheets:
+                final_mapping = mapping
+            else:
+                final_mapping = {}
+                for name in sheets:
+                    if name in mapping:
+                        final_mapping[name] = mapping[name]
+                    else:
+                        final_mapping[name] = reader.read_sheet(p, name, spec.password)
+            writer.write_multi_sheets(final_mapping, out)
             summary.append({"path": p, "out": out, "sheets": per_sheet})
         else:
             summary.append({"path": p, "out": None, "sheets": per_sheet})
-    return {"updated": len(summary), "items": summary}
+    if missing_records and spec.on_missing == "error":
+        details = "; ".join(
+            f"{item['path']}[{item['sheet']}] missing {', '.join(item['missing'])}" for item in missing_records
+        )
+        raise MissingColumnsError(f"Columns not found: {details}")
+
+    missing_total = sum(len(sheet["missing"]) for item in summary for sheet in item["sheets"])
+    removed_total = sum(len(sheet["removed"]) for item in summary for sheet in item["sheets"])
+    return {"updated": len(summary), "items": summary, "removed_total": removed_total, "missing_total": missing_total}
 
 def _build_out_path(path: str) -> str:
     from pathlib import Path

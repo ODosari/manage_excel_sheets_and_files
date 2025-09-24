@@ -3,10 +3,10 @@ from typing import Dict, Iterable, List
 
 import pandas as pd
 
-from NewVersion.excelmgr.core.models import CombinePlan
-from NewVersion.excelmgr.core.naming import sanitize_sheet_name, dedupe
-from NewVersion.excelmgr.ports.readers import WorkbookReader
-from NewVersion.excelmgr.ports.writers import WorkbookWriter
+from excelmgr.core.models import CombinePlan
+from excelmgr.core.naming import sanitize_sheet_name, dedupe
+from excelmgr.ports.readers import WorkbookReader
+from excelmgr.ports.writers import WorkbookWriter
 
 
 def _resolve_sheets(reader: WorkbookReader, f: str, include, password: str | None):

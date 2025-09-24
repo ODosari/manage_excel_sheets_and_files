@@ -1,15 +1,29 @@
-import os, tempfile, shutil
+import os
+import tempfile
 from contextlib import contextmanager
+from typing import IO, Any, Iterator
+
 
 @contextmanager
-def atomic_write(path: str, mode: str = "wb"):
+def atomic_write(path: str, mode: str = "wb", tmp_dir: str | None = None) -> Iterator[tuple[IO[Any], str]]:
     dname = os.path.dirname(os.path.abspath(path)) or "."
-    fd, tmp = tempfile.mkstemp(dir=dname, prefix=".tmp-", suffix=".partial")
+    os.makedirs(dname, exist_ok=True)
+    temp_root = tmp_dir or dname
+    os.makedirs(temp_root, exist_ok=True)
+
+    dest_device = os.stat(dname).st_dev
+    temp_device = os.stat(temp_root).st_dev
+    if dest_device != temp_device:
+        raise OSError(
+            "Temporary directory must reside on the same filesystem as the destination for atomic writes."
+        )
+
+    fd, tmp = tempfile.mkstemp(dir=temp_root, prefix=".tmp-", suffix=".partial")
     try:
         with os.fdopen(fd, mode) as f:
             yield f, tmp
         # Move into place atomically
-        shutil.move(tmp, path)
+        os.replace(tmp, path)
     finally:
         try:
             if os.path.exists(tmp):

@@ -10,5 +10,8 @@ class SheetNotFound(ExcelMgrError):
 class InvalidTargetPattern(ExcelMgrError):
     pass
 
+class MissingColumnsError(ExcelMgrError):
+    pass
+
 class MacroLossWarning(Warning):
     pass

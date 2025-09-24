@@ -1,5 +1,5 @@
-from NewVersion.excelmgr.core.models import DeleteSpec
-from NewVersion.excelmgr.core.delete_cols import _match_columns
+from excelmgr.core.models import DeleteSpec
+from excelmgr.core.delete_cols import _match_columns
 
 def test_match_names_exact():
     cols = ["ID", "Name", "Notes", "CustomerID"]
