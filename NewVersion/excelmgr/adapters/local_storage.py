@@ -11,6 +11,8 @@ def iter_files(root: str, glob: str | None = None, recursive: bool = False) -> I
     for fp in paths:
         if not fp.is_file():
             continue
+        if fp.name.startswith("~$"):
+            continue
         for pat in patterns:
             if fp.match(pat):
                 yield str(fp)
