@@ -1,5 +1,5 @@
 class ExcelMgrError(Exception):
-    """Base exception for excelmgr."""
+    """Base exception for the Excel management CLI."""
 
 class DecryptionError(ExcelMgrError):
     pass

@@ -5,11 +5,12 @@ from typing import Dict, List
 
 import pandas as pd
 
-from excelmgr.adapters.local_storage import iter_files
-from excelmgr.core.errors import MissingColumnsError
-from excelmgr.core.models import DeleteSpec
-from excelmgr.ports.readers import WorkbookReader
-from excelmgr.ports.writers import WorkbookWriter
+from src.adapters.local_storage import iter_files
+from src.core.errors import MissingColumnsError
+from src.core.models import DeleteSpec
+from src.core.passwords import resolve_password
+from src.ports.readers import WorkbookReader
+from src.ports.writers import WorkbookWriter
 
 
 def _plan_target_sheets(sheet_names: list[str], spec: DeleteSpec) -> list[tuple[str | int, str]]:
@@ -98,12 +99,24 @@ def delete_columns(spec: DeleteSpec, reader: WorkbookReader, writer: WorkbookWri
     summary = []
     missing_records: list[dict] = []
     for p in paths:
-        sheets = reader.sheet_names(p, spec.password)
+        pw = resolve_password(p, spec.password, spec.password_map)
+        workbook_cache = None
+        if spec.all_sheets:
+            sheets = reader.sheet_names(p, pw)
+        else:
+            workbook_cache = dict(reader.read_workbook(p, pw))
+            sheets = list(workbook_cache.keys())
         targets = _plan_target_sheets(sheets, spec)
         mapping: Dict[str, pd.DataFrame] = {}
         per_sheet = []
         for lookup, sheet_name in targets:
-            df = reader.read_sheet(p, lookup, spec.password)
+            if workbook_cache is not None:
+                df = workbook_cache.get(sheet_name)
+                if df is None:
+                    df = reader.read_sheet(p, lookup, pw)
+                    workbook_cache[sheet_name] = df
+            else:
+                df = reader.read_sheet(p, lookup, pw)
             remove, missing = _match_columns(list(df.columns), spec)
             new_df = _apply(df, remove)
             mapping[sheet_name] = new_df
@@ -126,12 +139,13 @@ def delete_columns(spec: DeleteSpec, reader: WorkbookReader, writer: WorkbookWri
             if spec.all_sheets:
                 final_mapping = mapping
             else:
+                source_frames = workbook_cache or dict(reader.read_workbook(p, pw))
                 final_mapping = {}
                 for name in sheets:
                     if name in mapping:
                         final_mapping[name] = mapping[name]
                     else:
-                        final_mapping[name] = reader.read_sheet(p, name, spec.password)
+                        final_mapping[name] = source_frames[name]
             writer.write_multi_sheets(final_mapping, out)
             summary.append({"path": p, "out": out, "sheets": per_sheet})
         else:
@@ -144,7 +158,13 @@ def delete_columns(spec: DeleteSpec, reader: WorkbookReader, writer: WorkbookWri
 
     missing_total = sum(len(sheet["missing"]) for item in summary for sheet in item["sheets"])
     removed_total = sum(len(sheet["removed"]) for item in summary for sheet in item["sheets"])
-    return {"updated": len(summary), "items": summary, "removed_total": removed_total, "missing_total": missing_total}
+    return {
+        "updated": len(summary),
+        "items": summary,
+        "removed_total": removed_total,
+        "missing_total": missing_total,
+        "dry_run": spec.dry_run,
+    }
 
 def _build_out_path(path: str) -> str:
     from pathlib import Path

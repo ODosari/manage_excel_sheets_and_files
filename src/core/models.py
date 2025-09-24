@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Literal, Sequence, Optional
+from typing import Literal, Sequence, Optional, Mapping
 
 ModeCombine = Literal["one_sheet", "multi_sheets"]
 ModeSplitTo = Literal["sheets", "files"]
@@ -20,6 +20,9 @@ class CombinePlan:
     output_path: str = "combined.xlsx"
     add_source_column: bool = False
     password: Optional[str] = None
+    password_map: Optional[Mapping[str, str]] = None
+    output_format: Literal["xlsx", "csv", "parquet"] = "xlsx"
+    dry_run: bool = False
 
 @dataclass(frozen=True)
 class SplitPlan:
@@ -30,6 +33,9 @@ class SplitPlan:
     include_nan: bool = False
     output_dir: str = "out"
     password: Optional[str] = None
+    password_map: Optional[Mapping[str, str]] = None
+    output_format: Literal["xlsx", "csv", "parquet"] = "xlsx"
+    dry_run: bool = False
 
 @dataclass(frozen=True)
 class DeleteSpec:
@@ -45,3 +51,4 @@ class DeleteSpec:
     glob: Optional[str] = None
     recursive: bool = False
     password: Optional[str] = None
+    password_map: Optional[Mapping[str, str]] = None

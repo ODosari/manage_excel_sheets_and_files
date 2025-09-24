@@ -1,7 +1,7 @@
 from typing import BinaryIO
 from io import BytesIO
 from ._utils import import_optional
-from excelmgr.core.errors import DecryptionError
+from src.core.errors import DecryptionError
 
 def unlock_to_stream(path: str, password: str) -> BinaryIO:
     msoffcrypto = import_optional("msoffcrypto")

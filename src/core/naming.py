@@ -17,12 +17,17 @@ def sanitize_sheet_name(name: str) -> str:
     return n
 
 def dedupe(base: str, existing: set[str]) -> str:
+    base = base[:_MAX_SHEET]
     if base not in existing:
         existing.add(base)
         return base
+
     i = 2
     while True:
-        name = f"{base}_{i}"
+        suffix = f"_{i}"
+        trim = _MAX_SHEET - len(suffix)
+        core = base[:trim] if trim > 0 else ""
+        name = f"{core}{suffix}"[-_MAX_SHEET:]
         if name not in existing and len(name) <= _MAX_SHEET:
             existing.add(name)
             return name

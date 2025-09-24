@@ -1,5 +1,5 @@
 from typer.testing import CliRunner
-from excelmgr.cli.main import app
+from src.cli.main import app
 
 def test_cli_version_and_help():
     r = CliRunner().invoke(app, ["version"])

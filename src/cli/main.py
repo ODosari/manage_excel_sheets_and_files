@@ -9,14 +9,14 @@ import typer
 from typer.core import TyperOption
 from rich import print
 
-from excelmgr.adapters.json_logger import JsonLogger
-from excelmgr.adapters.pandas_io import PandasReader, PandasWriter
-from excelmgr.config.settings import settings
-from excelmgr.core.combine import combine as combine_command
-from excelmgr.core.delete_cols import delete_columns as delete_columns_command
-from excelmgr.core.errors import ExcelMgrError
-from excelmgr.core.models import CombinePlan, DeleteSpec, SheetSpec, SplitPlan
-from excelmgr.core.split import split as split_command
+from src.adapters.json_logger import JsonLogger
+from src.adapters.pandas_io import PandasReader, PandasWriter
+from src.config.settings import settings
+from src.core.combine import combine as combine_command
+from src.core.delete_cols import delete_columns as delete_columns_command
+from src.core.errors import ExcelMgrError
+from src.core.models import CombinePlan, DeleteSpec, SheetSpec, SplitPlan
+from src.core.split import split as split_command
 
 def _patch_typer_option() -> None:
     original = TyperOption.make_metavar
@@ -114,12 +114,16 @@ def combine(
     password: Annotated[str | None, typer.Option("--password")] = None,
     password_env: Annotated[str | None, typer.Option("--password-env")] = None,
     password_file: Annotated[str | None, typer.Option("--password-file")] = None,
+    password_map: Annotated[str | None, typer.Option("--password-map")] = None,
+    out_format: Annotated[str, typer.Option("--format")] = "xlsx",
+    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ):
     logger = app.state["logger"]
-    from .options import read_secret
+    from .options import read_password_map, read_secret
 
     try:
         pw = read_secret(password, password_env, password_file)
+        pw_map = read_password_map(password_map)
 
         # parse sheet selection
         include: list[SheetSpec] | Literal["all"]
@@ -131,6 +135,12 @@ def combine(
         mode_map = {"one-sheet": "one_sheet", "multi-sheets": "multi_sheets"}
         if mode not in mode_map:
             raise ExcelMgrError("--mode must be 'one-sheet' or 'multi-sheets'.")
+        format_normalized = out_format.lower()
+        if format_normalized not in {"xlsx", "csv", "parquet"}:
+            raise ExcelMgrError("--format must be xlsx, csv, or parquet.")
+        if mode_map[mode] == "multi_sheets" and format_normalized != "xlsx":
+            raise ExcelMgrError("Multi-sheet combine output must use Excel format.")
+
         plan = CombinePlan(
             inputs=inputs,
             glob=glob,
@@ -140,6 +150,9 @@ def combine(
             output_path=out,
             add_source_column=add_source_column,
             password=pw,
+            password_map=pw_map,
+            output_format=format_normalized,  # type: ignore[arg-type]
+            dry_run=dry_run,
         )
         result = combine_command(plan, PandasReader(), PandasWriter())
         logger.info("combine_completed", **result)
@@ -165,12 +178,16 @@ def split(
     password: Annotated[str | None, typer.Option("--password")] = None,
     password_env: Annotated[str | None, typer.Option("--password-env")] = None,
     password_file: Annotated[str | None, typer.Option("--password-file")] = None,
+    password_map: Annotated[str | None, typer.Option("--password-map")] = None,
+    out_format: Annotated[str, typer.Option("--format")] = "xlsx",
+    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ):
     logger = app.state["logger"]
-    from .options import read_secret
+    from .options import read_password_map, read_secret
 
     try:
         pw = read_secret(password, password_env, password_file)
+        pw_map = read_password_map(password_map)
         sheet_spec = _parse_sheet_option(sheet)
         by_clean = by.strip()
         if not by_clean:
@@ -178,6 +195,11 @@ def split(
         by_col: str | int = int(by_clean) if by_clean.isdigit() else by_clean
         if to not in {"files", "sheets"}:
             raise ExcelMgrError("--to must be either 'files' or 'sheets'.")
+        format_normalized = out_format.lower()
+        if format_normalized not in {"xlsx", "csv", "parquet"}:
+            raise ExcelMgrError("--format must be xlsx, csv, or parquet.")
+        if to == "sheets" and format_normalized != "xlsx":
+            raise ExcelMgrError("Sheet mode output must be Excel format.")
 
         plan = SplitPlan(
             input_file=input_file,
@@ -187,6 +209,9 @@ def split(
             include_nan=include_nan,
             output_dir=out,
             password=pw,
+            password_map=pw_map,
+            output_format=format_normalized,  # type: ignore[arg-type]
+            dry_run=dry_run,
         )
         result = split_command(plan, PandasReader(), PandasWriter())
         logger.info("split_completed", **result)
@@ -220,13 +245,15 @@ def delete_cols(
     password: Annotated[str | None, typer.Option("--password")] = None,
     password_env: Annotated[str | None, typer.Option("--password-env")] = None,
     password_file: Annotated[str | None, typer.Option("--password-file")] = None,
+    password_map: Annotated[str | None, typer.Option("--password-map")] = None,
     yes: Annotated[bool, typer.Option("--yes")] = False,
 ):
     logger = app.state["logger"]
-    from .options import read_secret
+    from .options import read_password_map, read_secret
 
     try:
         pw = read_secret(password, password_env, password_file)
+        pw_map = read_password_map(password_map)
         if match not in {"names", "index"}:
             raise ExcelMgrError("--match must be 'names' or 'index'.")
         allowed_strategies = {"exact", "ci", "contains", "startswith", "endswith", "regex"}
@@ -282,6 +309,7 @@ def delete_cols(
             glob=glob,
             recursive=recursive,
             password=pw,
+            password_map=pw_map,
         )
         result = delete_columns_command(spec, PandasReader(), PandasWriter())
         logger.info("delete_cols_completed", **result)
@@ -319,6 +347,6 @@ def diagnose():
 
 @app.command(help="Show version.")
 def version():
-    from excelmgr import __version__
+    from src import __version__
 
     print(__version__)
