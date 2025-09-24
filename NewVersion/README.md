@@ -24,18 +24,23 @@ excelmgr delete-cols ./data --targets "Notes,CustomerID" --match names --strateg
 # Index mode (1-based):
 excelmgr delete-cols ./file.xlsx --targets "1,3,7" --match index --sheet Data --dry-run
 ```
+`--inplace` edits the original workbook. Omit it to create `*.cleaned.xlsx` siblings. `--yes` skips the safety prompt—leave it
+off to confirm before files are written.
 
 ## Config
-Defaults are read from environment variables (prefix `EXCELMGR_`) or a `.env` file:
+Defaults are read from environment variables (prefix `EXCELMGR_`) or a `.env` file. CLI flags always override the
+environment so you can temporarily change behavior without editing configuration files.
 - `EXCELMGR_GLOB="*.xlsx,*.xlsm"`
 - `EXCELMGR_RECURSIVE=false`
 - `EXCELMGR_LOG="json"`
 - `EXCELMGR_LOG_LEVEL="INFO"`
 - `EXCELMGR_MACRO_POLICY="warn"`  # warn|forbid|ignore
+- `EXCELMGR_TEMP_DIR` sets the directory used for temporary files (defaults next to the destination workbook)
 
 ## Security & passwords
 - Use `--password-env` or `--password-file` over `--password` to avoid shell history leak.
 - Encrypted workbooks require `msoffcrypto-tool` to decrypt to a temp stream before reading.
+- Install it via `pip install msoffcrypto-tool` when working with password-protected files.
 - Logs never include cell data; only shapes and counts.
 
 ## Macro safety

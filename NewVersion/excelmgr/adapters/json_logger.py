@@ -20,9 +20,11 @@ class JsonLogger:
     def _emit(self, event: str, **kwargs: Any):
         payload: Dict[str, Any] = {"event": event, "ts": round(time.time(),3), "run_id": self.run_id}
         payload.update(kwargs)
-        payload.setdefault("level","INFO")
-        self.log.info(self._serialize(payload))
+        level_name = payload.setdefault("level","INFO")
+        level = getattr(logging, level_name.upper(), logging.INFO)
+        self.log.log(level, self._serialize(payload))
 
     def info(self, event: str, **kwargs: Any): self._emit(event, level="INFO", **kwargs)
-    def warn(self, event: str, **kwargs: Any): self._emit(event, level="WARN", **kwargs)
+    def warn(self, event: str, **kwargs: Any): self._emit(event, level="WARNING", **kwargs)
+    warning = warn
     def error(self, event: str, **kwargs: Any): self._emit(event, level="ERROR", **kwargs)

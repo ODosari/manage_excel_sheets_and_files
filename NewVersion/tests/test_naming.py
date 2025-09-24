@@ -1,4 +1,4 @@
-from NewVersion.excelmgr.core.naming import sanitize_sheet_name, dedupe
+from excelmgr.core.naming import sanitize_sheet_name, dedupe
 
 def test_sanitize_basic():
     assert sanitize_sheet_name("  /Weird:Name*  ") == "Weird_Name_"

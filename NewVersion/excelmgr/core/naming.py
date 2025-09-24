@@ -11,6 +11,7 @@ def sanitize_sheet_name(name: str) -> str:
     n = re.sub(r"\s+", " ", n).strip()
     n = n.replace("/", "_").replace("\\", "_")
     n = n[:_MAX_SHEET]
+    n = n.lstrip("_")
     if not n:
         n = "Sheet"
     return n
