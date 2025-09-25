@@ -3,15 +3,29 @@ from pathlib import Path
 import pandas as pd
 
 from excelmgr.core.errors import ExcelMgrError
-from excelmgr.core.models import SplitPlan
+from excelmgr.core.models import CloudDestination, DatabaseDestination, SplitPlan
 from excelmgr.core.naming import dedupe, sanitize_sheet_name
 from excelmgr.core.passwords import resolve_password
 from excelmgr.core.sinks import csv_sink, parquet_sink
 from excelmgr.ports.readers import WorkbookReader
-from excelmgr.ports.writers import WorkbookWriter
+from excelmgr.ports.writers import CloudObjectWriter, WorkbookWriter
 
 
-def split(plan: SplitPlan, reader: WorkbookReader, writer: WorkbookWriter) -> dict:
+def _render_cloud_key(template: str, unique_name: str) -> str:
+    if "{name}" in template:
+        return template.replace("{name}", unique_name)
+    if template.endswith("/"):
+        return f"{template}{unique_name}"
+    return template
+
+
+def split(
+    plan: SplitPlan,
+    reader: WorkbookReader,
+    writer: WorkbookWriter,
+    *,
+    cloud_writer: CloudObjectWriter | None = None,
+) -> dict:
     sheet_ref = plan.sheet.name_or_index if plan.sheet != "active" else 0
     pw = resolve_password(plan.input_file, plan.password, plan.password_map)
     df = reader.read_sheet(plan.input_file, sheet_ref, pw)
@@ -36,6 +50,10 @@ def split(plan: SplitPlan, reader: WorkbookReader, writer: WorkbookWriter) -> di
         parts = df[~key_series.isna()].groupby(key_series, dropna=True)
     else:
         parts = df.groupby(key_series, dropna=False)
+
+    destination = plan.destination
+    if isinstance(destination, DatabaseDestination):
+        raise ExcelMgrError("Split plan does not support database destinations yet.")
 
     if plan.to == "sheets":
         mapping: dict[str, pd.DataFrame] = {}
@@ -65,6 +83,7 @@ def split(plan: SplitPlan, reader: WorkbookReader, writer: WorkbookWriter) -> di
     base_dir = Path(plan.output_dir).expanduser()
     seen_files: set[str] = set()
     ext_map = {"xlsx": ".xlsx", "csv": ".csv", "parquet": ".parquet"}
+    cloud_records: list[str] = []
     for k, g in parts:
         name = sanitize_sheet_name(str(k)) or "Empty"
         unique = dedupe(name, seen_files, max_length=None)
@@ -79,8 +98,18 @@ def split(plan: SplitPlan, reader: WorkbookReader, writer: WorkbookWriter) -> di
             elif plan.output_format == "parquet":
                 with parquet_sink(str(out_path)) as sink:
                     sink.append(g)
+            if isinstance(destination, CloudDestination):
+                if cloud_writer is None:
+                    raise ExcelMgrError(
+                        "Cloud destination requested but no cloud writer was provided."
+                    )
+                key = _render_cloud_key(destination.key, unique)
+                fmt = destination.format or plan.output_format
+                with cloud_writer.stream_object(key, fmt) as sink:
+                    sink.append(g)
+                cloud_records.append(key)
         outputs.append(str(out_path))
-    return {
+    result = {
         "to": "files",
         "count": len(outputs),
         "out_dir": str(base_dir),
@@ -88,3 +117,12 @@ def split(plan: SplitPlan, reader: WorkbookReader, writer: WorkbookWriter) -> di
         "format": plan.output_format,
         "dry_run": plan.dry_run,
     }
+    if isinstance(destination, CloudDestination):
+        result["destination"] = {
+            "kind": "cloud",
+            "key_template": destination.key,
+            "root": destination.root,
+        }
+    if cloud_records:
+        result["uploaded"] = cloud_records
+    return result

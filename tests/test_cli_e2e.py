@@ -57,8 +57,8 @@ def test_cli_combine_to_csv_format():
     with runner.isolated_filesystem():
         df1 = pd.DataFrame({"Customer": ["A"], "Amount": [10]})
         df2 = pd.DataFrame({"Customer": ["B"], "Amount": [20]})
-        df1.to_excel("north.xlsx", index=False)
-        df2.to_excel("south.xlsx", index=False)
+        df1.to_excel("north.xlsx", index=False, sheet_name="North")
+        df2.to_excel("south.xlsx", index=False, sheet_name="South")
 
         result = runner.invoke(
             app,
@@ -201,6 +201,23 @@ def test_cli_split_to_sheets_derives_output_name():
         assert payload["dry_run"] is False
 
 
+def test_cli_preview_reports_metadata():
+    with runner.isolated_filesystem():
+        with pd.ExcelWriter("report.xlsx") as writer:
+            pd.DataFrame({"A": [1, 2], "B": [3, 4]}).to_excel(writer, sheet_name="Summary", index=False)
+            pd.DataFrame({"X": ["x"]}).to_excel(writer, sheet_name="Notes", index=False)
+
+        result = runner.invoke(app, ["preview", "report.xlsx"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.stdout
+        payload = _read_json(result.stdout)
+        assert payload["path"].endswith("report.xlsx")
+        assert {sheet["name"] for sheet in payload["sheets"]} == {"Summary", "Notes"}
+        summary = next(sheet for sheet in payload["sheets"] if sheet["name"] == "Summary")
+        assert summary["rows"] == 2
+        assert summary["headers"] == ["A", "B"]
+
+
 def test_cli_split_reports_missing_column_error():
     with runner.isolated_filesystem():
         df = pd.DataFrame({"Category": ["A", "B"], "Value": [1, 2]})
@@ -339,3 +356,47 @@ def test_cli_delete_cols_sheet_index_updates_target_only():
         assert set(data.keys()) == {"North", "South"}
         assert "Remove" in data["North"].columns
         assert "Remove" not in data["South"].columns
+
+
+def test_cli_plan_executes_operations():
+    with runner.isolated_filesystem():
+        df1 = pd.DataFrame({"Region": ["North"], "Value": [10]})
+        df2 = pd.DataFrame({"Region": ["South"], "Value": [20]})
+        df1.to_excel("north.xlsx", index=False, sheet_name="North")
+        df2.to_excel("south.xlsx", index=False, sheet_name="South")
+
+        plan_text = """
+operations:
+  - type: combine
+    name: combine_cloud
+    options:
+      inputs:
+        - north.xlsx
+        - south.xlsx
+      output_format: csv
+      output_path: combined_local.csv
+      destination:
+        kind: cloud
+        root: cloud-bucket
+        key: combined.csv
+        format: csv
+  - type: preview
+    name: inspect
+    options:
+      path: north.xlsx
+      limit: 1
+"""
+        Path("batch.yaml").write_text(plan_text, encoding="utf-8")
+
+        result = runner.invoke(app, ["plan", "batch.yaml"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.stdout
+        payload = _read_json(result.stdout)
+        operations = payload["operations"]
+        assert [op["type"] for op in operations] == ["combine", "preview"]
+        assert Path("combined_local.csv").exists()
+        assert Path("cloud-bucket/combined.csv").exists()
+        combine_result = operations[0]["result"]
+        assert combine_result["destination"]["kind"] == "cloud"
+        preview_result = operations[1]["result"]
+        assert preview_result["sheets"][0]["name"] == "North"

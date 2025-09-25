@@ -1,5 +1,6 @@
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Literal
 
 ModeCombine = Literal["one_sheet", "multi_sheets"]
@@ -10,6 +11,25 @@ NameMatchStrategy = Literal["exact", "ci", "contains", "startswith", "endswith",
 @dataclass(frozen=True)
 class SheetSpec:
     name_or_index: str | int  # flexible addressing
+
+@dataclass(frozen=True)
+class DatabaseDestination:
+    uri: str
+    table: str
+    mode: Literal["replace", "append"] = "replace"
+    options: Mapping[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CloudDestination:
+    root: str
+    key: str
+    format: Literal["csv", "parquet", "xlsx"] = "parquet"
+    options: Mapping[str, object] = field(default_factory=dict)
+
+
+Destination = DatabaseDestination | CloudDestination
+
 
 @dataclass(frozen=True)
 class CombinePlan:
@@ -24,6 +44,8 @@ class CombinePlan:
     password_map: Mapping[str, str] | None = None
     output_format: Literal["xlsx", "csv", "parquet"] = "xlsx"
     dry_run: bool = False
+    destination: Destination | None = None
+
 
 @dataclass(frozen=True)
 class SplitPlan:
@@ -37,6 +59,8 @@ class SplitPlan:
     password_map: Mapping[str, str] | None = None
     output_format: Literal["xlsx", "csv", "parquet"] = "xlsx"
     dry_run: bool = False
+    destination: Destination | None = None
+
 
 @dataclass(frozen=True)
 class DeleteSpec:
@@ -53,3 +77,12 @@ class DeleteSpec:
     recursive: bool = False
     password: str | None = None
     password_map: Mapping[str, str] | None = None
+
+
+@dataclass(frozen=True)
+class PreviewPlan:
+    path: str
+    password: str | None = None
+    password_map: Mapping[str, str] | None = None
+    limit: int | None = None
+

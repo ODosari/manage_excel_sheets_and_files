@@ -4,12 +4,13 @@ from contextlib import nullcontext
 
 import pandas as pd
 
-from excelmgr.core.models import CombinePlan
+from excelmgr.core.errors import ExcelMgrError
+from excelmgr.core.models import CloudDestination, CombinePlan, DatabaseDestination
 from excelmgr.core.naming import dedupe, sanitize_sheet_name
 from excelmgr.core.passwords import resolve_password
 from excelmgr.core.sinks import csv_sink, parquet_sink
 from excelmgr.ports.readers import WorkbookReader
-from excelmgr.ports.writers import WorkbookWriter
+from excelmgr.ports.writers import CloudObjectWriter, TableWriter, WorkbookWriter
 
 
 def _resolve_sheets(reader: WorkbookReader, f: str, include, password: str | None):
@@ -34,12 +35,49 @@ class _NullSink:
         return
 
 
-def combine(plan: CombinePlan, reader: WorkbookReader, writer: WorkbookWriter) -> dict:
+def _cloud_sink_cm(
+    plan: CombinePlan,
+    destination: CloudDestination,
+    *,
+    cloud_writer: CloudObjectWriter | None,
+):
+    if plan.mode != "one_sheet":
+        raise ExcelMgrError("Cloud destinations are only supported for one-sheet combine mode.")
+    if plan.dry_run:
+        return nullcontext(_NullSink())
+    if cloud_writer is None:
+        raise ExcelMgrError("Cloud destination requested but no cloud writer was provided.")
+    return cloud_writer.stream_object(destination.key, destination.format or plan.output_format)
+
+
+def _database_state(destination: DatabaseDestination | None):
+    if destination is None:
+        return None
+    return {
+        "destination": destination,
+        "first": True,
+    }
+
+
+def combine(
+    plan: CombinePlan,
+    reader: WorkbookReader,
+    writer: WorkbookWriter,
+    *,
+    database_writer: TableWriter | None = None,
+    cloud_writer: CloudObjectWriter | None = None,
+) -> dict:
     sheet_frames: dict[str, pd.DataFrame] | None = {} if plan.mode == "multi_sheets" and not plan.dry_run else None
     sheet_names: list[str] = []
     combined_rows = 0
     sheet_name_set: set[str] = set()
     files_processed = 0
+
+    destination = plan.destination
+    database_state = _database_state(destination if isinstance(destination, DatabaseDestination) else None)
+
+    if isinstance(destination, DatabaseDestination) and plan.mode != "one_sheet":
+        raise ExcelMgrError("Database destinations are only supported for one-sheet combine mode.")
 
     if plan.mode == "one_sheet":
         if plan.dry_run:
@@ -53,11 +91,17 @@ def combine(plan: CombinePlan, reader: WorkbookReader, writer: WorkbookWriter) -
                 sink_cm = parquet_sink(plan.output_path)
             else:  # pragma: no cover - guarded by CLI validation
                 sink_cm = nullcontext(_NullSink())
+        if isinstance(destination, CloudDestination):
+            cloud_cm = _cloud_sink_cm(plan, destination, cloud_writer=cloud_writer)
+        else:
+            cloud_cm = nullcontext(_NullSink())
     else:
         sink_cm = nullcontext(_NullSink())
+        cloud_cm = nullcontext(_NullSink())
 
-    with sink_cm as sink_obj:
+    with sink_cm as sink_obj, cloud_cm as cloud_obj:
         sink = sink_obj or _NullSink()
+        cloud_sink = cloud_obj or _NullSink()
         for f in _iter_input_files(reader, plan.inputs, plan.glob, plan.recursive):
             files_processed += 1
             pw = resolve_password(f, plan.password, plan.password_map)
@@ -70,6 +114,22 @@ def combine(plan: CombinePlan, reader: WorkbookReader, writer: WorkbookWriter) -
                 if plan.mode == "one_sheet":
                     combined_rows += len(df)
                     sink.append(df)
+                    cloud_sink.append(df)
+                    if database_state and not plan.dry_run:
+                        destination = database_state["destination"]
+                        if database_writer is None:
+                            raise ExcelMgrError(
+                                "Database destination requested but no database writer was provided."
+                            )
+                        mode = destination.mode if database_state["first"] else "append"
+                        database_writer.write_dataframe(
+                            df,
+                            destination.table,
+                            mode=mode,
+                            options=destination.options,
+                            uri=destination.uri,
+                        )
+                        database_state["first"] = False
                 else:
                     name = sanitize_sheet_name(str(s))
                     name = dedupe(name, sheet_name_set)
@@ -78,7 +138,7 @@ def combine(plan: CombinePlan, reader: WorkbookReader, writer: WorkbookWriter) -
                     sheet_names.append(name)
 
     if plan.mode == "one_sheet":
-        return {
+        result = {
             "mode": "one_sheet",
             "rows": combined_rows,
             "files": files_processed,
@@ -86,6 +146,12 @@ def combine(plan: CombinePlan, reader: WorkbookReader, writer: WorkbookWriter) -
             "format": plan.output_format,
             "dry_run": plan.dry_run,
         }
+        if destination is not None:
+            if isinstance(destination, DatabaseDestination):
+                result["destination"] = {"kind": "database", "uri": destination.uri, "table": destination.table}
+            elif isinstance(destination, CloudDestination):
+                result["destination"] = {"kind": "cloud", "key": destination.key, "root": destination.root}
+        return result
 
     sheets_out = list(sheet_frames.keys()) if sheet_frames is not None else sheet_names
     if not plan.dry_run and sheet_frames is not None:
