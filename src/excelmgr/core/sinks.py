@@ -24,7 +24,11 @@ class _CsvSink:
             header_frame.to_csv(self._handle, index=False)
             self._header_written = True
         if not df.empty:
-            df.to_csv(self._handle, index=False, header=False)
+            if self._columns is None:
+                aligned = df
+            else:
+                aligned = df.reindex(columns=self._columns)
+            aligned.to_csv(self._handle, index=False, header=False)
 
     def finalize(self) -> None:
         if not self._header_written and self._columns is not None:

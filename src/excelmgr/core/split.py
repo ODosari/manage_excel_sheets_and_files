@@ -67,7 +67,7 @@ def split(plan: SplitPlan, reader: WorkbookReader, writer: WorkbookWriter) -> di
     ext_map = {"xlsx": ".xlsx", "csv": ".csv", "parquet": ".parquet"}
     for k, g in parts:
         name = sanitize_sheet_name(str(k)) or "Empty"
-        unique = dedupe(name, seen_files)
+        unique = dedupe(name, seen_files, max_length=None)
         suffix = ext_map[plan.output_format]
         out_path = base_dir / f"{unique}{suffix}"
         if not plan.dry_run:
