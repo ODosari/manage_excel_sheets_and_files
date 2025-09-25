@@ -94,7 +94,10 @@ def delete_columns(spec: DeleteSpec, reader: WorkbookReader, writer: WorkbookWri
     if os.path.isdir(spec.path):
         paths = list(iter_files(spec.path, spec.glob, spec.recursive))
     else:
-        paths = [spec.path]
+        if os.path.basename(spec.path).startswith("~$"):
+            paths = []
+        else:
+            paths = [spec.path]
 
     summary = []
     missing_records: list[dict] = []

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from excelmgr.core.combine import combine
+from excelmgr.core.combine import _iter_input_files, combine
 from excelmgr.core.models import CombinePlan
 
 
@@ -83,3 +83,13 @@ def test_combine_uses_password_map_and_streaming(tmp_path: Path) -> None:
     assert [call[2] for call in reader.read_calls] == ["default", "special"]
     assert len(writer.appended) == 2
     assert all("password" in df.columns for df in writer.appended)
+
+
+def test_iter_input_files_skips_lock_files(tmp_path: Path) -> None:
+    lock = tmp_path / "~$open.xlsx"
+    lock.touch()
+    reader = StubReader()
+
+    files = list(_iter_input_files(reader, [str(lock)], None, False))
+
+    assert files == []

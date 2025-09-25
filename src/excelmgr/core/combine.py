@@ -22,6 +22,8 @@ def _resolve_sheets(reader: WorkbookReader, f: str, include, password: str | Non
 
 def _iter_input_files(reader: WorkbookReader, inputs: Iterable[str], glob: str | None, recursive: bool) -> Iterable[str]:
     for item in inputs:
+        if os.path.basename(item).startswith("~$"):
+            continue
         if os.path.isdir(item):
             yield from reader.iter_files(item, glob, recursive)
         else:
