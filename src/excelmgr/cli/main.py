@@ -121,6 +121,7 @@ def combine(
     recursive: Annotated[bool, typer.Option("--recursive")] = False,
     sheets: Annotated[str, typer.Option("--sheets")] = "all",
     out: Annotated[str, typer.Option("--out")] = "combined.xlsx",
+    sheet_name: Annotated[str, typer.Option("--sheet-name")] = "Data",
     add_source_column: Annotated[bool, typer.Option("--add-source-column")] = False,
     password: Annotated[str | None, typer.Option("--password")] = None,
     password_env: Annotated[str | None, typer.Option("--password-env")] = None,
@@ -159,6 +160,7 @@ def combine(
             mode=mode_map[mode],
             include_sheets=include,
             output_path=out,
+            output_sheet_name=sheet_name,
             add_source_column=add_source_column,
             password=pw,
             password_map=pw_map,
@@ -192,6 +194,8 @@ def split(
     to: Annotated[str, typer.Option("--to")] = "files",
     include_nan: Annotated[bool, typer.Option("--include-nan")] = False,
     out: Annotated[str, typer.Option("--out")] = "out",
+    out_file: Annotated[str | None, typer.Option("--out-file")] = None,
+    sheet_name: Annotated[str, typer.Option("--sheet-name")] = "Data",
     password: Annotated[str | None, typer.Option("--password")] = None,
     password_env: Annotated[str | None, typer.Option("--password-env")] = None,
     password_file: Annotated[str | None, typer.Option("--password-file")] = None,
@@ -225,6 +229,8 @@ def split(
             to=to,  # already Literal-aligned
             include_nan=include_nan,
             output_dir=out,
+            output_filename=out_file,
+            output_sheet_name=sheet_name,
             password=pw,
             password_map=pw_map,
             output_format=format_normalized,  # type: ignore[arg-type]
@@ -365,7 +371,13 @@ def delete_cols(
             password=pw,
             password_map=pw_map,
         )
-        result = delete_columns_command(spec, PandasReader(), PandasWriter())
+        hook = _make_progress_hook(logger)
+        result = delete_columns_command(
+            spec,
+            PandasReader(),
+            PandasWriter(),
+            progress_hooks=[hook],
+        )
         logger.info("delete_cols_completed", **result)
         print(json.dumps(result, indent=2))
     except typer.Exit:

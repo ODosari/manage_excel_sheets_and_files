@@ -10,6 +10,7 @@ from excelmgr.adapters.local_storage import iter_files as _iter_files
 from excelmgr.adapters.xls_protection import unlock_to_stream
 from excelmgr.config.settings import settings
 from excelmgr.core.errors import MacroLossWarning, SheetNotFound
+from excelmgr.ports.writers import MultiSheetStream
 
 
 class PandasReader:
@@ -120,3 +121,41 @@ class PandasWriter:
                     yield appender
                 finally:
                     appender.finalize()
+
+    @contextmanager
+    def stream_multi_sheets(self, out_path: str) -> Iterator[MultiSheetStream]:
+        self._macro_policy(out_path)
+        self._ensure_parent_dir(out_path)
+
+        class _WorkbookAppender:
+            def __init__(self, excel_writer: pd.ExcelWriter) -> None:
+                self._writer = excel_writer
+                self._row_positions: dict[str, int] = {}
+
+            def append(self, sheet_name: str, df: pd.DataFrame) -> None:
+                start = self._row_positions.get(sheet_name, 0)
+                header = start == 0
+                to_write = df if not (header and df.empty) else df.head(0)
+                if to_write.empty and not header:
+                    return
+                to_write.to_excel(
+                    self._writer,
+                    index=False,
+                    sheet_name=sheet_name,
+                    startrow=start,
+                    header=header,
+                )
+                header_rows = 1 if header else 0
+                self._row_positions[sheet_name] = start + header_rows + len(to_write)
+                if header and df.empty:
+                    # Ensure the sheet materializes even when empty by writing a blank sheet
+                    pd.DataFrame().to_excel(
+                        self._writer,
+                        index=False,
+                        sheet_name=sheet_name,
+                    )
+
+        with atomic_write(out_path, "wb", tmp_dir=settings.temp_dir) as (f, tmp):
+            with pd.ExcelWriter(f, engine=self.engine) as w:
+                appender = _WorkbookAppender(w)
+                yield appender

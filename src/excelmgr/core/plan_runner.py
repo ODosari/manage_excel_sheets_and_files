@@ -160,6 +160,7 @@ def _build_combine_plan(entry: Mapping, base_dir: Path) -> CombinePlan:
         raise ExcelMgrError("Combine 'mode' must be 'one_sheet' or 'multi_sheets'.")
     output_path = entry.get("output_path", "combined.xlsx")
     resolved_output = _resolve_path(base_dir, output_path)
+    sheet_name = entry.get("sheet_name") or entry.get("output_sheet_name")
     return CombinePlan(
         inputs=paths,
         glob=entry.get("glob"),
@@ -167,6 +168,7 @@ def _build_combine_plan(entry: Mapping, base_dir: Path) -> CombinePlan:
         mode=mode,  # type: ignore[arg-type]
         include_sheets=include,
         output_path=resolved_output,
+        output_sheet_name=sheet_name or "Data",
         add_source_column=bool(entry.get("add_source_column", False)),
         password=entry.get("password"),
         password_map=password_map,
@@ -188,6 +190,8 @@ def _build_split_plan(entry: Mapping, base_dir: Path) -> SplitPlan:
     to = entry.get("to", "files")
     output_dir = entry.get("output_dir") or entry.get("out") or "out"
     resolved_out = _resolve_path(base_dir, output_dir)
+    out_file = entry.get("output_filename") or entry.get("out_file")
+    sheet_name = entry.get("sheet_name") or entry.get("output_sheet_name")
     return SplitPlan(
         input_file=resolved_input,
         sheet=sheet,
@@ -195,6 +199,8 @@ def _build_split_plan(entry: Mapping, base_dir: Path) -> SplitPlan:
         to=to,  # type: ignore[arg-type]
         include_nan=bool(entry.get("include_nan", False)),
         output_dir=resolved_out,
+        output_filename=out_file,
+        output_sheet_name=sheet_name or "Data",
         password=entry.get("password"),
         password_map=password_map,
         output_format=str(entry.get("output_format", "xlsx")),
@@ -361,7 +367,12 @@ def execute_plan(
                 progress_hooks=hooks,
             )
         elif op.type == "delete":
-            result = delete_columns(op.plan, reader, writer)  # type: ignore[arg-type]
+            result = delete_columns(
+                op.plan,  # type: ignore[arg-type]
+                reader,
+                writer,
+                progress_hooks=hooks,
+            )
         else:
             result = preview(op.plan, reader)  # type: ignore[arg-type]
         results.append({"type": op.type, "name": op.name, "result": result})
