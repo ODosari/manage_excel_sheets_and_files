@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from pathlib import Path
 
 import pandas as pd
@@ -6,6 +7,7 @@ from excelmgr.core.errors import ExcelMgrError
 from excelmgr.core.models import CloudDestination, DatabaseDestination, SplitPlan
 from excelmgr.core.naming import dedupe, sanitize_sheet_name
 from excelmgr.core.passwords import resolve_password
+from excelmgr.core.progress import ProgressHook, emit_progress
 from excelmgr.core.sinks import csv_sink, parquet_sink
 from excelmgr.ports.readers import WorkbookReader
 from excelmgr.ports.writers import CloudObjectWriter, WorkbookWriter
@@ -25,11 +27,34 @@ def split(
     writer: WorkbookWriter,
     *,
     cloud_writer: CloudObjectWriter | None = None,
+    progress_hooks: Iterable[ProgressHook] | None = None,
 ) -> dict:
+    hooks = tuple(progress_hooks or ())
+    emit_progress(
+        hooks,
+        "split_start",
+        input=plan.input_file,
+        sheet=str(plan.sheet.name_or_index) if plan.sheet != "active" else "active",
+        mode=plan.to,
+        dry_run=plan.dry_run,
+    )
+
     sheet_ref = plan.sheet.name_or_index if plan.sheet != "active" else 0
     pw = resolve_password(plan.input_file, plan.password, plan.password_map)
     df = reader.read_sheet(plan.input_file, sheet_ref, pw)
     col = plan.by_column
+    if isinstance(col, str):
+        cleaned = col.strip()
+        if cleaned.lower().startswith("index:"):
+            _, _, rest = cleaned.partition(":")
+            if not rest.strip().lstrip("-").isdigit():
+                raise ExcelMgrError(
+                    "Column index specifier must include a numeric value after 'index:'."
+                )
+            col = int(rest.strip())
+        elif cleaned.lower().startswith("name:"):
+            _, _, rest = cleaned.partition(":")
+            col = rest.strip() or col
     try:
         if isinstance(col, int):
             key_series = df.iloc[:, col]
@@ -62,6 +87,13 @@ def split(
             name = sanitize_sheet_name(str(k))
             name = dedupe(name, seen)
             mapping[name] = g
+            emit_progress(
+                hooks,
+                "split_partition",
+                key=str(k),
+                rows=len(g),
+                output=name,
+            )
         base = Path(plan.output_dir).expanduser()
         if base.suffix.lower() == ".xlsx":
             out_path = base
@@ -70,13 +102,21 @@ def split(
             out_path = base / derived
         if not plan.dry_run:
             writer.write_multi_sheets(mapping, str(out_path))
-        return {
+        result = {
             "to": "sheets",
             "sheets": list(mapping.keys()),
             "out": str(out_path),
             "by": key_name,
             "dry_run": plan.dry_run,
         }
+        emit_progress(
+            hooks,
+            "split_complete",
+            mode=plan.to,
+            partitions=len(mapping),
+            output=str(out_path),
+        )
+        return result
 
     # to files
     outputs: list[str] = []
@@ -89,6 +129,13 @@ def split(
         unique = dedupe(name, seen_files, max_length=None)
         suffix = ext_map[plan.output_format]
         out_path = base_dir / f"{unique}{suffix}"
+        emit_progress(
+            hooks,
+            "split_partition",
+            key=str(k),
+            rows=len(g),
+            output=str(out_path),
+        )
         if not plan.dry_run:
             if plan.output_format == "xlsx":
                 writer.write_single_sheet(g, str(out_path), sheet_name="Data")
@@ -125,4 +172,11 @@ def split(
         }
     if cloud_records:
         result["uploaded"] = cloud_records
+    emit_progress(
+        hooks,
+        "split_complete",
+        mode=plan.to,
+        partitions=len(outputs),
+        output=str(base_dir),
+    )
     return result

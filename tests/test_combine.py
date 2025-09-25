@@ -93,3 +93,38 @@ def test_iter_input_files_skips_lock_files(tmp_path: Path) -> None:
     files = list(_iter_input_files(reader, [str(lock)], None, False))
 
     assert files == []
+
+
+def test_combine_emits_progress_hooks(tmp_path: Path) -> None:
+    file_a = tmp_path / "a.xlsx"
+    file_b = tmp_path / "b.xlsx"
+    file_a.touch()
+    file_b.touch()
+
+    reader = StubReader()
+    writer = StubWriter()
+
+    plan = CombinePlan(
+        inputs=[str(file_a), str(file_b)],
+        include_sheets="all",
+        output_path=str(tmp_path / "out.xlsx"),
+        output_format="xlsx",
+    )
+
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def _hook(event: str, payload: dict[str, object]) -> None:
+        events.append((event, payload))
+
+    combine(plan, reader, writer, progress_hooks=[_hook])
+
+    assert [event for event, _ in events] == [
+        "combine_start",
+        "combine_file",
+        "combine_sheet",
+        "combine_file",
+        "combine_sheet",
+        "combine_complete",
+    ]
+    assert events[0][1]["mode"] == "one_sheet"
+    assert events[-1][1]["rows"] == 2

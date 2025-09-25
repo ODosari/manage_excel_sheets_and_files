@@ -23,6 +23,7 @@ from excelmgr.core.models import (
 )
 from excelmgr.core.password_maps import load_password_map
 from excelmgr.core.preview import preview
+from excelmgr.core.progress import ProgressHook
 from excelmgr.core.split import split
 from excelmgr.ports.readers import WorkbookReader
 from excelmgr.ports.writers import CloudObjectWriter, TableWriter, WorkbookWriter
@@ -333,8 +334,11 @@ def execute_plan(
     operations: Iterable[PlanOperation],
     reader: WorkbookReader,
     writer: WorkbookWriter,
+    *,
+    progress_hooks: Iterable[ProgressHook] | None = None,
 ) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
+    hooks = tuple(progress_hooks or ())
     for op in operations:
         destination = getattr(op.plan, "destination", None)
         db_writer = _make_database_writer(destination)
@@ -346,6 +350,7 @@ def execute_plan(
                 writer,
                 database_writer=db_writer,
                 cloud_writer=cloud_writer,
+                progress_hooks=hooks,
             )
         elif op.type == "split":
             result = split(
@@ -353,6 +358,7 @@ def execute_plan(
                 reader,
                 writer,
                 cloud_writer=cloud_writer,
+                progress_hooks=hooks,
             )
         elif op.type == "delete":
             result = delete_columns(op.plan, reader, writer)  # type: ignore[arg-type]
