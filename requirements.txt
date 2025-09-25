@@ -1,7 +1,1 @@
-pydantic
-pydantic-settings
-rich
-typer
-pandas>=2.2.2
-openpyxl>=3.1.4
-msoffcrypto-tool>=5.4.1
+-e .[dev]
