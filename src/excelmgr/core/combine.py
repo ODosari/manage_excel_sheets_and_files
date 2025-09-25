@@ -8,6 +8,7 @@ from excelmgr.core.errors import ExcelMgrError
 from excelmgr.core.models import CloudDestination, CombinePlan, DatabaseDestination
 from excelmgr.core.naming import dedupe, sanitize_sheet_name
 from excelmgr.core.passwords import resolve_password
+from excelmgr.core.progress import ProgressHook, emit_progress
 from excelmgr.core.sinks import csv_sink, parquet_sink
 from excelmgr.ports.readers import WorkbookReader
 from excelmgr.ports.writers import CloudObjectWriter, TableWriter, WorkbookWriter
@@ -66,7 +67,17 @@ def combine(
     *,
     database_writer: TableWriter | None = None,
     cloud_writer: CloudObjectWriter | None = None,
+    progress_hooks: Iterable[ProgressHook] | None = None,
 ) -> dict:
+    hooks = tuple(progress_hooks or ())
+    emit_progress(
+        hooks,
+        "combine_start",
+        mode=plan.mode,
+        inputs=len(plan.inputs),
+        output=plan.output_path,
+        dry_run=plan.dry_run,
+    )
     sheet_frames: dict[str, pd.DataFrame] | None = {} if plan.mode == "multi_sheets" and not plan.dry_run else None
     sheet_names: list[str] = []
     combined_rows = 0
@@ -104,6 +115,7 @@ def combine(
         cloud_sink = cloud_obj or _NullSink()
         for f in _iter_input_files(reader, plan.inputs, plan.glob, plan.recursive):
             files_processed += 1
+            emit_progress(hooks, "combine_file", index=files_processed, file=f)
             pw = resolve_password(f, plan.password, plan.password_map)
             sheets = _resolve_sheets(reader, f, plan.include_sheets, pw)
             for s in sheets:
@@ -111,6 +123,13 @@ def combine(
                 if plan.add_source_column:
                     df = df.copy()
                     df.insert(0, "source_file", f)
+                emit_progress(
+                    hooks,
+                    "combine_sheet",
+                    file=f,
+                    sheet=str(s),
+                    rows=len(df),
+                )
                 if plan.mode == "one_sheet":
                     combined_rows += len(df)
                     sink.append(df)
@@ -151,15 +170,32 @@ def combine(
                 result["destination"] = {"kind": "database", "uri": destination.uri, "table": destination.table}
             elif isinstance(destination, CloudDestination):
                 result["destination"] = {"kind": "cloud", "key": destination.key, "root": destination.root}
+        emit_progress(
+            hooks,
+            "combine_complete",
+            mode=plan.mode,
+            files=files_processed,
+            rows=combined_rows,
+            output=plan.output_path,
+        )
         return result
 
     sheets_out = list(sheet_frames.keys()) if sheet_frames is not None else sheet_names
     if not plan.dry_run and sheet_frames is not None:
         writer.write_multi_sheets(sheet_frames, plan.output_path)
-    return {
+    result = {
         "mode": "multi_sheets",
         "sheets": sheets_out,
         "files": files_processed,
         "out": plan.output_path,
         "dry_run": plan.dry_run,
     }
+    emit_progress(
+        hooks,
+        "combine_complete",
+        mode=plan.mode,
+        files=files_processed,
+        sheets=len(sheets_out),
+        output=plan.output_path,
+    )
+    return result

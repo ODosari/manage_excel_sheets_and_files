@@ -18,6 +18,7 @@ from excelmgr.core.errors import ExcelMgrError
 from excelmgr.core.models import CombinePlan, DeleteSpec, PreviewPlan, SheetSpec, SplitPlan
 from excelmgr.core.plan_runner import execute_plan, load_plan_file
 from excelmgr.core.preview import preview as preview_command
+from excelmgr.core.progress import ProgressHook
 from excelmgr.core.split import split as split_command
 
 
@@ -43,6 +44,13 @@ app = typer.Typer(no_args_is_help=True, add_completion=False, rich_markup_mode=N
 def _make_logger(fmt: str, level: str, file: str | None):
     level_num = getattr(logging, level.upper(), logging.INFO)
     return JsonLogger(level=level_num, fmt=fmt, file=file)
+
+
+def _make_progress_hook(logger: JsonLogger) -> ProgressHook:
+    def _hook(event: str, payload: dict[str, object]) -> None:
+        logger.info(event, **payload)
+
+    return _hook
 
 
 def _parse_sheet_list(raw: str) -> list[SheetSpec]:
@@ -157,7 +165,13 @@ def combine(
             output_format=format_normalized,  # type: ignore[arg-type]
             dry_run=dry_run,
         )
-        result = combine_command(plan, PandasReader(), PandasWriter())
+        hook = _make_progress_hook(logger)
+        result = combine_command(
+            plan,
+            PandasReader(),
+            PandasWriter(),
+            progress_hooks=[hook],
+        )
         logger.info("combine_completed", **result)
         print(json.dumps(result, indent=2))
     except typer.Exit:
@@ -216,7 +230,13 @@ def split(
             output_format=format_normalized,  # type: ignore[arg-type]
             dry_run=dry_run,
         )
-        result = split_command(plan, PandasReader(), PandasWriter())
+        hook = _make_progress_hook(logger)
+        result = split_command(
+            plan,
+            PandasReader(),
+            PandasWriter(),
+            progress_hooks=[hook],
+        )
         logger.info("split_completed", **result)
         print(json.dumps(result, indent=2))
     except typer.Exit:
@@ -365,7 +385,13 @@ def plan(
     logger = app.state["logger"]
     try:
         operations = load_plan_file(plan_file)
-        results = execute_plan(operations, PandasReader(), PandasWriter())
+        hook = _make_progress_hook(logger)
+        results = execute_plan(
+            operations,
+            PandasReader(),
+            PandasWriter(),
+            progress_hooks=[hook],
+        )
         logger.info("plan_completed", operations=len(results))
         print(json.dumps({"operations": results}, indent=2))
     except typer.Exit:
