@@ -43,6 +43,13 @@ def _make_logger(fmt: str, level: str, file: str | None):
     return JsonLogger(level=level_num, fmt=fmt, file=file)
 
 
+def _progress_callback(logger: JsonLogger):
+    def _emit(event: str, payload: dict[str, object]) -> None:
+        logger.info(event, **payload)
+
+    return _emit
+
+
 def _parse_sheet_list(raw: str) -> list[SheetSpec]:
     tokens = [token.strip() for token in raw.split(",")]
     if any(not token for token in tokens):
@@ -111,6 +118,7 @@ def combine(
     recursive: Annotated[bool, typer.Option("--recursive")] = False,
     sheets: Annotated[str, typer.Option("--sheets")] = "all",
     out: Annotated[str, typer.Option("--out")] = "combined.xlsx",
+    sheet_name: Annotated[str, typer.Option("--sheet-name")] = "Data",
     add_source_column: Annotated[bool, typer.Option("--add-source-column")] = False,
     password: Annotated[str | None, typer.Option("--password")] = None,
     password_env: Annotated[str | None, typer.Option("--password-env")] = None,
@@ -154,6 +162,8 @@ def combine(
             password_map=pw_map,
             output_format=format_normalized,  # type: ignore[arg-type]
             dry_run=dry_run,
+            sheet_name=sheet_name,
+            progress=_progress_callback(logger),
         )
         result = combine_command(plan, PandasReader(), PandasWriter())
         logger.info("combine_completed", **result)
@@ -176,6 +186,8 @@ def split(
     to: Annotated[str, typer.Option("--to")] = "files",
     include_nan: Annotated[bool, typer.Option("--include-nan")] = False,
     out: Annotated[str, typer.Option("--out")] = "out",
+    out_file: Annotated[str | None, typer.Option("--out-file")] = None,
+    sheet_name: Annotated[str, typer.Option("--sheet-name")] = "Data",
     password: Annotated[str | None, typer.Option("--password")] = None,
     password_env: Annotated[str | None, typer.Option("--password-env")] = None,
     password_file: Annotated[str | None, typer.Option("--password-file")] = None,
@@ -202,6 +214,9 @@ def split(
         if to == "sheets" and format_normalized != "xlsx":
             raise ExcelMgrError("Sheet mode output must be Excel format.")
 
+        if out_file and to != "sheets":
+            raise ExcelMgrError("--out-file can only be used when --to sheets is selected.")
+
         plan = SplitPlan(
             input_file=input_file,
             sheet=sheet_spec,
@@ -213,6 +228,8 @@ def split(
             password_map=pw_map,
             output_format=format_normalized,  # type: ignore[arg-type]
             dry_run=dry_run,
+            output_file=out_file,
+            sheet_name=sheet_name,
         )
         result = split_command(plan, PandasReader(), PandasWriter())
         logger.info("split_completed", **result)
@@ -311,6 +328,7 @@ def delete_cols(
             recursive=recursive,
             password=pw,
             password_map=pw_map,
+            progress=_progress_callback(logger),
         )
         result = delete_columns_command(spec, PandasReader(), PandasWriter())
         logger.info("delete_cols_completed", **result)

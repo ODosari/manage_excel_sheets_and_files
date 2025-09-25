@@ -99,24 +99,19 @@ def delete_columns(spec: DeleteSpec, reader: WorkbookReader, writer: WorkbookWri
     summary = []
     missing_records: list[dict] = []
     for p in paths:
+        if spec.progress is not None:
+            spec.progress("delete_workbook_started", {"path": p})
         pw = resolve_password(p, spec.password, spec.password_map)
-        workbook_cache = None
-        if spec.all_sheets:
-            sheets = reader.sheet_names(p, pw)
-        else:
-            workbook_cache = dict(reader.read_workbook(p, pw))
-            sheets = list(workbook_cache.keys())
+        sheets = reader.sheet_names(p, pw)
         targets = _plan_target_sheets(sheets, spec)
         mapping: dict[str, pd.DataFrame] = {}
         per_sheet = []
+        cache: dict[str, pd.DataFrame] = {}
         for lookup, sheet_name in targets:
-            if workbook_cache is not None:
-                df = workbook_cache.get(sheet_name)
-                if df is None:
-                    df = reader.read_sheet(p, lookup, pw)
-                    workbook_cache[sheet_name] = df
-            else:
+            df = cache.get(sheet_name)
+            if df is None:
                 df = reader.read_sheet(p, lookup, pw)
+                cache[sheet_name] = df
             remove, missing = _match_columns(list(df.columns), spec)
             new_df = _apply(df, remove)
             mapping[sheet_name] = new_df
@@ -130,6 +125,16 @@ def delete_columns(spec: DeleteSpec, reader: WorkbookReader, writer: WorkbookWri
             )
             if spec.on_missing == "error" and missing:
                 missing_records.append({"path": p, "sheet": sheet_name, "missing": missing})
+            if spec.progress is not None:
+                spec.progress(
+                    "delete_sheet_processed",
+                    {
+                        "path": p,
+                        "sheet": sheet_name,
+                        "removed": remove,
+                        "missing": missing,
+                    },
+                )
 
         if missing_records and spec.on_missing == "error":
             break
@@ -139,15 +144,20 @@ def delete_columns(spec: DeleteSpec, reader: WorkbookReader, writer: WorkbookWri
             if spec.all_sheets:
                 final_mapping = mapping
             else:
-                source_frames = workbook_cache or dict(reader.read_workbook(p, pw))
                 final_mapping = {}
                 for name in sheets:
                     if name in mapping:
                         final_mapping[name] = mapping[name]
                     else:
-                        final_mapping[name] = source_frames[name]
+                        df = cache.get(name)
+                        if df is None:
+                            df = reader.read_sheet(p, name, pw)
+                            cache[name] = df
+                        final_mapping[name] = df
             writer.write_multi_sheets(final_mapping, out)
             summary.append({"path": p, "out": out, "sheets": per_sheet})
+            if spec.progress is not None:
+                spec.progress("delete_workbook_written", {"path": p, "out": out})
         else:
             summary.append({"path": p, "out": None, "sheets": per_sheet})
     if missing_records and spec.on_missing == "error":

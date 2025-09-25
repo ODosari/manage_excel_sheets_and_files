@@ -44,12 +44,15 @@ def split(plan: SplitPlan, reader: WorkbookReader, writer: WorkbookWriter) -> di
             name = sanitize_sheet_name(str(k))
             name = dedupe(name, seen)
             mapping[name] = g
-        base = Path(plan.output_dir).expanduser()
-        if base.suffix.lower() == ".xlsx":
-            out_path = base
+        base_dir = Path(plan.output_dir).expanduser()
+        if plan.output_file:
+            candidate = Path(plan.output_file)
+            out_path = candidate if candidate.is_absolute() else base_dir / candidate
+        elif base_dir.suffix.lower() == ".xlsx":
+            out_path = base_dir
         else:
             derived = f"{Path(plan.input_file).stem}_split.xlsx"
-            out_path = base / derived
+            out_path = base_dir / derived
         if not plan.dry_run:
             writer.write_multi_sheets(mapping, str(out_path))
         return {
@@ -72,7 +75,7 @@ def split(plan: SplitPlan, reader: WorkbookReader, writer: WorkbookWriter) -> di
         out_path = base_dir / f"{unique}{suffix}"
         if not plan.dry_run:
             if plan.output_format == "xlsx":
-                writer.write_single_sheet(g, str(out_path), sheet_name="Data")
+                writer.write_single_sheet(g, str(out_path), sheet_name=plan.sheet_name)
             elif plan.output_format == "csv":
                 with csv_sink(str(out_path)) as sink:
                     sink.append(g)
@@ -83,6 +86,7 @@ def split(plan: SplitPlan, reader: WorkbookReader, writer: WorkbookWriter) -> di
     return {
         "to": "files",
         "count": len(outputs),
+        "files": outputs,
         "out_dir": str(base_dir),
         "by": key_name,
         "format": plan.output_format,

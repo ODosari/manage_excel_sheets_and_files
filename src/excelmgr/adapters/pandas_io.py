@@ -120,3 +120,29 @@ class PandasWriter:
                     yield appender
                 finally:
                     appender.finalize()
+
+    @contextmanager
+    def stream_multi_sheets(self, out_path: str):
+        self._macro_policy(out_path)
+        self._ensure_parent_dir(out_path)
+
+        class _WorkbookAppender:
+            def __init__(self, excel_writer: pd.ExcelWriter) -> None:
+                self._writer = excel_writer
+                self._written = False
+
+            def write_sheet(self, name: str, df: pd.DataFrame) -> None:
+                df.to_excel(self._writer, index=False, sheet_name=name)
+                self._written = True
+
+            def finalize(self) -> None:
+                if not self._written:
+                    pd.DataFrame().to_excel(self._writer, index=False, sheet_name="Sheet1")
+
+        with atomic_write(out_path, "wb", tmp_dir=settings.temp_dir) as (f, tmp):
+            with pd.ExcelWriter(f, engine=self.engine) as w:
+                appender = _WorkbookAppender(w)
+                try:
+                    yield appender
+                finally:
+                    appender.finalize()

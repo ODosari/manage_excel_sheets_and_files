@@ -1,6 +1,9 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal
+
+ProgressPayload = Mapping[str, object]
+ProgressCallback = Callable[[str, ProgressPayload], None]
 
 ModeCombine = Literal["one_sheet", "multi_sheets"]
 ModeSplitTo = Literal["sheets", "files"]
@@ -24,6 +27,8 @@ class CombinePlan:
     password_map: Mapping[str, str] | None = None
     output_format: Literal["xlsx", "csv", "parquet"] = "xlsx"
     dry_run: bool = False
+    sheet_name: str = "Data"
+    progress: ProgressCallback | None = None
 
 @dataclass(frozen=True)
 class SplitPlan:
@@ -37,6 +42,8 @@ class SplitPlan:
     password_map: Mapping[str, str] | None = None
     output_format: Literal["xlsx", "csv", "parquet"] = "xlsx"
     dry_run: bool = False
+    output_file: str | None = None
+    sheet_name: str = "Data"
 
 @dataclass(frozen=True)
 class DeleteSpec:
@@ -53,3 +60,4 @@ class DeleteSpec:
     recursive: bool = False
     password: str | None = None
     password_map: Mapping[str, str] | None = None
+    progress: ProgressCallback | None = None

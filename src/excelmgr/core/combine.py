@@ -32,8 +32,17 @@ class _NullSink:
         return
 
 
+class _NullMultiSink:
+    def write_sheet(self, name: str, df: pd.DataFrame) -> None:  # pragma: no cover - trivial
+        return
+
+
+def _report(plan: CombinePlan, event: str, **payload) -> None:
+    if plan.progress is not None:
+        plan.progress(event, payload)
+
+
 def combine(plan: CombinePlan, reader: WorkbookReader, writer: WorkbookWriter) -> dict:
-    sheet_frames: dict[str, pd.DataFrame] | None = {} if plan.mode == "multi_sheets" and not plan.dry_run else None
     sheet_names: list[str] = []
     combined_rows = 0
     sheet_name_set: set[str] = set()
@@ -44,7 +53,7 @@ def combine(plan: CombinePlan, reader: WorkbookReader, writer: WorkbookWriter) -
             sink_cm = nullcontext(_NullSink())
         else:
             if plan.output_format == "xlsx":
-                sink_cm = writer.stream_single_sheet(plan.output_path, sheet_name="Data")
+                sink_cm = writer.stream_single_sheet(plan.output_path, sheet_name=plan.sheet_name)
             elif plan.output_format == "csv":
                 sink_cm = csv_sink(plan.output_path)
             elif plan.output_format == "parquet":
@@ -52,12 +61,16 @@ def combine(plan: CombinePlan, reader: WorkbookReader, writer: WorkbookWriter) -
             else:  # pragma: no cover - guarded by CLI validation
                 sink_cm = nullcontext(_NullSink())
     else:
-        sink_cm = nullcontext(_NullSink())
+        if plan.dry_run:
+            sink_cm = nullcontext(_NullMultiSink())
+        else:
+            sink_cm = writer.stream_multi_sheets(plan.output_path)
 
     with sink_cm as sink_obj:
-        sink = sink_obj or _NullSink()
+        sink = sink_obj or (_NullSink() if plan.mode == "one_sheet" else _NullMultiSink())
         for f in _iter_input_files(reader, plan.inputs, plan.glob, plan.recursive):
             files_processed += 1
+            _report(plan, "combine_file_started", file=f, index=files_processed)
             pw = resolve_password(f, plan.password, plan.password_map)
             sheets = _resolve_sheets(reader, f, plan.include_sheets, pw)
             for s in sheets:
@@ -68,12 +81,28 @@ def combine(plan: CombinePlan, reader: WorkbookReader, writer: WorkbookWriter) -
                 if plan.mode == "one_sheet":
                     combined_rows += len(df)
                     sink.append(df)
+                    _report(
+                        plan,
+                        "combine_sheet_appended",
+                        file=f,
+                        sheet=str(s),
+                        rows=len(df),
+                        index=files_processed,
+                    )
                 else:
                     name = sanitize_sheet_name(str(s))
                     name = dedupe(name, sheet_name_set)
-                    if sheet_frames is not None:
-                        sheet_frames[name] = df
                     sheet_names.append(name)
+                    sink.write_sheet(name, df)
+                    _report(
+                        plan,
+                        "combine_sheet_written",
+                        file=f,
+                        sheet=str(s),
+                        output_sheet=name,
+                        rows=len(df),
+                        index=files_processed,
+                    )
 
     if plan.mode == "one_sheet":
         return {
@@ -85,12 +114,9 @@ def combine(plan: CombinePlan, reader: WorkbookReader, writer: WorkbookWriter) -
             "dry_run": plan.dry_run,
         }
 
-    sheets_out = list(sheet_frames.keys()) if sheet_frames is not None else sheet_names
-    if not plan.dry_run and sheet_frames is not None:
-        writer.write_multi_sheets(sheet_frames, plan.output_path)
     return {
         "mode": "multi_sheets",
-        "sheets": sheets_out,
+        "sheets": sheet_names,
         "files": files_processed,
         "out": plan.output_path,
         "dry_run": plan.dry_run,
