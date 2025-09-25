@@ -36,6 +36,11 @@ class _NullSink:
         return
 
 
+class _NullMultiSink:
+    def append(self, sheet_name: str, df: pd.DataFrame) -> None:  # pragma: no cover - trivial
+        return
+
+
 def _cloud_sink_cm(
     plan: CombinePlan,
     destination: CloudDestination,
@@ -78,7 +83,6 @@ def combine(
         output=plan.output_path,
         dry_run=plan.dry_run,
     )
-    sheet_frames: dict[str, pd.DataFrame] | None = {} if plan.mode == "multi_sheets" and not plan.dry_run else None
     sheet_names: list[str] = []
     combined_rows = 0
     sheet_name_set: set[str] = set()
@@ -95,7 +99,7 @@ def combine(
             sink_cm = nullcontext(_NullSink())
         else:
             if plan.output_format == "xlsx":
-                sink_cm = writer.stream_single_sheet(plan.output_path, sheet_name="Data")
+                sink_cm = writer.stream_single_sheet(plan.output_path, sheet_name=plan.output_sheet_name)
             elif plan.output_format == "csv":
                 sink_cm = csv_sink(plan.output_path)
             elif plan.output_format == "parquet":
@@ -107,11 +111,17 @@ def combine(
         else:
             cloud_cm = nullcontext(_NullSink())
     else:
-        sink_cm = nullcontext(_NullSink())
+        if plan.dry_run:
+            sink_cm = nullcontext(_NullMultiSink())
+        else:
+            sink_cm = writer.stream_multi_sheets(plan.output_path)
         cloud_cm = nullcontext(_NullSink())
 
     with sink_cm as sink_obj, cloud_cm as cloud_obj:
-        sink = sink_obj or _NullSink()
+        if plan.mode == "one_sheet":
+            sink = sink_obj or _NullSink()
+        else:
+            sink = sink_obj or _NullMultiSink()
         cloud_sink = cloud_obj or _NullSink()
         for f in _iter_input_files(reader, plan.inputs, plan.glob, plan.recursive):
             files_processed += 1
@@ -152,8 +162,7 @@ def combine(
                 else:
                     name = sanitize_sheet_name(str(s))
                     name = dedupe(name, sheet_name_set)
-                    if sheet_frames is not None:
-                        sheet_frames[name] = df
+                    sink.append(name, df)
                     sheet_names.append(name)
 
     if plan.mode == "one_sheet":
@@ -180,9 +189,7 @@ def combine(
         )
         return result
 
-    sheets_out = list(sheet_frames.keys()) if sheet_frames is not None else sheet_names
-    if not plan.dry_run and sheet_frames is not None:
-        writer.write_multi_sheets(sheet_frames, plan.output_path)
+    sheets_out = sheet_names
     result = {
         "mode": "multi_sheets",
         "sheets": sheets_out,

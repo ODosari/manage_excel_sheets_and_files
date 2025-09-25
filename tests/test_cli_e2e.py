@@ -140,6 +140,10 @@ def test_cli_split_to_files_creates_directory_structure():
         b_file = Path("exports/items/A_B_2.xlsx")
         assert a_file.exists() and b_file.exists()
         assert payload["count"] == 2
+        assert sorted(Path(p).name for p in payload["outputs"]) == [
+            "A_B.xlsx",
+            "A_B_2.xlsx",
+        ]
         assert pd.read_excel(a_file)["Category"].unique().tolist() == ["A/B"]
 
 
@@ -171,6 +175,10 @@ def test_cli_split_to_csv_format():
         b_file = Path("exports/B.csv")
         assert a_file.exists() and b_file.exists()
         assert payload["format"] == "csv"
+        assert sorted(Path(p).name for p in payload["outputs"]) == [
+            "A.csv",
+            "B.csv",
+        ]
         assert pd.read_csv(a_file)["Category"].tolist() == ["A"]
 
 
@@ -199,6 +207,61 @@ def test_cli_split_to_sheets_derives_output_name():
         assert out_file.exists()
         payload = _read_json(result.stdout)
         assert payload["dry_run"] is False
+        assert payload["out"].endswith("mydata_split.xlsx")
+
+
+def test_cli_split_honors_custom_output_filename_and_sheet_name():
+    with runner.isolated_filesystem():
+        df = pd.DataFrame({"Group": ["G1"], "Value": [1]})
+        df.to_excel("data.xlsx", index=False)
+
+        result = runner.invoke(
+            app,
+            [
+                "split",
+                "data.xlsx",
+                "--by",
+                "Group",
+                "--to",
+                "sheets",
+                "--out",
+                "exports",
+                "--out-file",
+                "custom.xlsx",
+            ],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.stdout
+        payload = _read_json(result.stdout)
+        assert payload["out"].endswith("custom.xlsx")
+        assert Path("exports/custom.xlsx").exists()
+
+        result_files = runner.invoke(
+            app,
+            [
+                "split",
+                "data.xlsx",
+                "--by",
+                "Group",
+                "--to",
+                "files",
+                "--out",
+                "exports",
+                "--sheet-name",
+                "Summary",
+            ],
+            catch_exceptions=False,
+        )
+
+        assert result_files.exit_code == 0, result_files.stdout
+        payload_files = _read_json(result_files.stdout)
+        first_output = Path(payload_files["outputs"][0])
+        assert first_output.exists()
+        default_df = pd.read_excel(first_output)
+        assert default_df.columns.tolist()[0] == "Group"
+        summary_df = pd.read_excel(first_output, sheet_name="Summary")
+        assert summary_df.equals(default_df)
 
 
 def test_cli_preview_reports_metadata():

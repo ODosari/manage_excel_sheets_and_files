@@ -38,6 +38,7 @@ class CombinePlan:
     mode: ModeCombine = "one_sheet"
     include_sheets: Sequence[SheetSpec] | Literal["all"] = "all"
     output_path: str = "combined.xlsx"
+    output_sheet_name: str = "Data"
     add_source_column: bool = False
     password: str | None = None
     password_map: Mapping[str, str] | None = None
@@ -54,6 +55,8 @@ class SplitPlan:
     to: ModeSplitTo = "files"
     include_nan: bool = False
     output_dir: str = "out"
+    output_filename: str | None = None
+    output_sheet_name: str = "Data"
     password: str | None = None
     password_map: Mapping[str, str] | None = None
     output_format: Literal["xlsx", "csv", "parquet"] = "xlsx"

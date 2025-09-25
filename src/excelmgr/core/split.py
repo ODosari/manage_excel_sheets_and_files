@@ -39,6 +39,9 @@ def split(
         dry_run=plan.dry_run,
     )
 
+    if plan.to != "sheets" and plan.output_filename:
+        raise ExcelMgrError("Custom output filenames are only supported when splitting to sheets.")
+
     sheet_ref = plan.sheet.name_or_index if plan.sheet != "active" else 0
     pw = resolve_password(plan.input_file, plan.password, plan.password_map)
     df = reader.read_sheet(plan.input_file, sheet_ref, pw)
@@ -95,7 +98,10 @@ def split(
                 output=name,
             )
         base = Path(plan.output_dir).expanduser()
-        if base.suffix.lower() == ".xlsx":
+        if plan.output_filename:
+            candidate = Path(plan.output_filename).expanduser()
+            out_path = candidate if candidate.is_absolute() else base / candidate
+        elif base.suffix.lower() == ".xlsx":
             out_path = base
         else:
             derived = f"{Path(plan.input_file).stem}_split.xlsx"
@@ -138,7 +144,7 @@ def split(
         )
         if not plan.dry_run:
             if plan.output_format == "xlsx":
-                writer.write_single_sheet(g, str(out_path), sheet_name="Data")
+                writer.write_single_sheet(g, str(out_path), sheet_name=plan.output_sheet_name)
             elif plan.output_format == "csv":
                 with csv_sink(str(out_path)) as sink:
                     sink.append(g)
@@ -159,6 +165,7 @@ def split(
     result = {
         "to": "files",
         "count": len(outputs),
+        "outputs": outputs,
         "out_dir": str(base_dir),
         "by": key_name,
         "format": plan.output_format,

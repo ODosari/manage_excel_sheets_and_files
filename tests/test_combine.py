@@ -32,6 +32,8 @@ class StubWriter:
         self.appended: list[pd.DataFrame] = []
         self.multi_written: dict[str, pd.DataFrame] | None = None
         self.finalized = False
+        self.multi_appended: list[tuple[str, pd.DataFrame]] = []
+        self.last_sheet_name: str | None = None
 
     def write_single_sheet(self, df: pd.DataFrame, out_path: str, sheet_name: str = "Data") -> None:  # pragma: no cover - not used
         raise AssertionError("write_single_sheet should not be called for streaming test")
@@ -41,6 +43,8 @@ class StubWriter:
 
     @contextmanager
     def stream_single_sheet(self, out_path: str, sheet_name: str = "Data"):
+        self.last_sheet_name = sheet_name
+
         class _Recorder:
             def __init__(self, owner: "StubWriter") -> None:
                 self._owner = owner
@@ -56,6 +60,19 @@ class StubWriter:
             yield recorder
         finally:
             recorder.finalize()
+
+    @contextmanager
+    def stream_multi_sheets(self, out_path: str):
+
+        class _MultiRecorder:
+            def __init__(self, owner: "StubWriter") -> None:
+                self._owner = owner
+
+            def append(self, sheet_name: str, df: pd.DataFrame) -> None:
+                self._owner.multi_appended.append((sheet_name, df.copy()))
+
+        recorder = _MultiRecorder(self)
+        yield recorder
 
 
 def test_combine_uses_password_map_and_streaming(tmp_path: Path) -> None:
@@ -83,6 +100,55 @@ def test_combine_uses_password_map_and_streaming(tmp_path: Path) -> None:
     assert [call[2] for call in reader.read_calls] == ["default", "special"]
     assert len(writer.appended) == 2
     assert all("password" in df.columns for df in writer.appended)
+
+
+def test_combine_respects_custom_sheet_name(tmp_path: Path) -> None:
+    file_a = tmp_path / "a.xlsx"
+    file_a.touch()
+
+    reader = StubReader()
+    writer = StubWriter()
+
+    plan = CombinePlan(
+        inputs=[str(file_a)],
+        include_sheets="all",
+        output_path=str(tmp_path / "out.xlsx"),
+        output_format="xlsx",
+        output_sheet_name="Summary",
+    )
+
+    combine(plan, reader, writer)
+
+    assert writer.last_sheet_name == "Summary"
+
+
+def test_combine_multi_mode_streams_without_accumulating(tmp_path: Path) -> None:
+    file_a = tmp_path / "a.xlsx"
+    file_a.touch()
+
+    class MultiReader(StubReader):
+        def sheet_names(self, path: str, password: str | None = None) -> list[str]:
+            return ["Sheet1", "Sheet2"]
+
+        def read_sheet(self, path: str, sheet: str | int, password: str | None = None) -> pd.DataFrame:
+            return pd.DataFrame({"value": [path, sheet]})
+
+    reader = MultiReader()
+    writer = StubWriter()
+
+    plan = CombinePlan(
+        inputs=[str(file_a)],
+        include_sheets="all",
+        mode="multi_sheets",
+        output_path=str(tmp_path / "out.xlsx"),
+        output_format="xlsx",
+    )
+
+    result = combine(plan, reader, writer)
+
+    assert result["mode"] == "multi_sheets"
+    assert writer.multi_appended
+    assert writer.multi_written is None
 
 
 def test_iter_input_files_skips_lock_files(tmp_path: Path) -> None:

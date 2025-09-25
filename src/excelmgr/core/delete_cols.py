@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterable
 
 import pandas as pd
 
@@ -9,6 +10,7 @@ from excelmgr.adapters.local_storage import iter_files
 from excelmgr.core.errors import MissingColumnsError
 from excelmgr.core.models import DeleteSpec
 from excelmgr.core.passwords import resolve_password
+from excelmgr.core.progress import ProgressHook, emit_progress
 from excelmgr.ports.readers import WorkbookReader
 from excelmgr.ports.writers import WorkbookWriter
 
@@ -89,7 +91,22 @@ def _match_columns(columns: list[str], spec: DeleteSpec) -> tuple[list[str], lis
 def _apply(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return df.drop(columns=cols, errors="ignore")
 
-def delete_columns(spec: DeleteSpec, reader: WorkbookReader, writer: WorkbookWriter) -> dict:
+def delete_columns(
+    spec: DeleteSpec,
+    reader: WorkbookReader,
+    writer: WorkbookWriter,
+    *,
+    progress_hooks: Iterable[ProgressHook] | None = None,
+) -> dict:
+    hooks = tuple(progress_hooks or ())
+    emit_progress(
+        hooks,
+        "delete_start",
+        path=spec.path,
+        recursive=spec.recursive,
+        glob=spec.glob,
+        dry_run=spec.dry_run,
+    )
     # collect paths
     if os.path.isdir(spec.path):
         paths = list(iter_files(spec.path, spec.glob, spec.recursive))
@@ -101,25 +118,28 @@ def delete_columns(spec: DeleteSpec, reader: WorkbookReader, writer: WorkbookWri
 
     summary = []
     missing_records: list[dict] = []
-    for p in paths:
+    for index, p in enumerate(paths, 1):
+        emit_progress(hooks, "delete_workbook", index=index, path=p)
         pw = resolve_password(p, spec.password, spec.password_map)
-        workbook_cache = None
-        if spec.all_sheets:
-            sheets = reader.sheet_names(p, pw)
-        else:
-            workbook_cache = dict(reader.read_workbook(p, pw))
-            sheets = list(workbook_cache.keys())
+        sheet_names = reader.sheet_names(p, pw)
+        sheet_cache: dict[str, pd.DataFrame] = {}
+        sheets = list(sheet_names)
         targets = _plan_target_sheets(sheets, spec)
         mapping: dict[str, pd.DataFrame] = {}
         per_sheet = []
-        for lookup, sheet_name in targets:
-            if workbook_cache is not None:
-                df = workbook_cache.get(sheet_name)
-                if df is None:
-                    df = reader.read_sheet(p, lookup, pw)
-                    workbook_cache[sheet_name] = df
-            else:
+        for position, (lookup, sheet_name) in enumerate(targets, 1):
+            emit_progress(
+                hooks,
+                "delete_sheet",
+                workbook=p,
+                sheet=sheet_name,
+                index=position,
+            )
+            cache_key = str(sheet_name)
+            df = sheet_cache.get(cache_key)
+            if df is None:
                 df = reader.read_sheet(p, lookup, pw)
+                sheet_cache[cache_key] = df
             remove, missing = _match_columns(list(df.columns), spec)
             new_df = _apply(df, remove)
             mapping[sheet_name] = new_df
@@ -142,17 +162,28 @@ def delete_columns(spec: DeleteSpec, reader: WorkbookReader, writer: WorkbookWri
             if spec.all_sheets:
                 final_mapping = mapping
             else:
-                source_frames = workbook_cache or dict(reader.read_workbook(p, pw))
                 final_mapping = {}
                 for name in sheets:
                     if name in mapping:
                         final_mapping[name] = mapping[name]
                     else:
-                        final_mapping[name] = source_frames[name]
+                        cache_key = str(name)
+                        original = sheet_cache.get(cache_key)
+                        if original is None:
+                            original = reader.read_sheet(p, name, pw)
+                            sheet_cache[cache_key] = original
+                        final_mapping[name] = original
             writer.write_multi_sheets(final_mapping, out)
             summary.append({"path": p, "out": out, "sheets": per_sheet})
         else:
             summary.append({"path": p, "out": None, "sheets": per_sheet})
+        emit_progress(
+            hooks,
+            "delete_workbook_complete",
+            path=p,
+            sheets=len(per_sheet),
+            removed=sum(len(s["removed"]) for s in per_sheet),
+        )
     if missing_records and spec.on_missing == "error":
         details = "; ".join(
             f"{item['path']}[{item['sheet']}] missing {', '.join(item['missing'])}" for item in missing_records
@@ -161,13 +192,21 @@ def delete_columns(spec: DeleteSpec, reader: WorkbookReader, writer: WorkbookWri
 
     missing_total = sum(len(sheet["missing"]) for item in summary for sheet in item["sheets"])
     removed_total = sum(len(sheet["removed"]) for item in summary for sheet in item["sheets"])
-    return {
+    result = {
         "updated": len(summary),
         "items": summary,
         "removed_total": removed_total,
         "missing_total": missing_total,
         "dry_run": spec.dry_run,
     }
+    emit_progress(
+        hooks,
+        "delete_complete",
+        updated=len(summary),
+        removed=removed_total,
+        missing=missing_total,
+    )
+    return result
 
 def _build_out_path(path: str) -> str:
     from pathlib import Path
