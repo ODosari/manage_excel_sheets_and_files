@@ -15,7 +15,9 @@ from excelmgr.config.settings import settings
 from excelmgr.core.combine import combine as combine_command
 from excelmgr.core.delete_cols import delete_columns as delete_columns_command
 from excelmgr.core.errors import ExcelMgrError
-from excelmgr.core.models import CombinePlan, DeleteSpec, SheetSpec, SplitPlan
+from excelmgr.core.models import CombinePlan, DeleteSpec, PreviewPlan, SheetSpec, SplitPlan
+from excelmgr.core.plan_runner import execute_plan, load_plan_file
+from excelmgr.core.preview import preview as preview_command
 from excelmgr.core.split import split as split_command
 
 
@@ -227,6 +229,37 @@ def split(
         raise typer.Exit(code=1) from exc
 
 
+@app.command(help="Preview workbook metadata (sheet names, counts, headers).")
+def preview(
+    path: Annotated[str, typer.Argument(help="Workbook to inspect.")],
+    password: Annotated[str | None, typer.Option("--password")] = None,
+    password_env: Annotated[str | None, typer.Option("--password-env")] = None,
+    password_file: Annotated[str | None, typer.Option("--password-file")] = None,
+    password_map: Annotated[str | None, typer.Option("--password-map")] = None,
+    limit: Annotated[int | None, typer.Option("--limit", help="Optional sample row limit per sheet.")] = None,
+):
+    logger = app.state["logger"]
+    from .options import read_password_map, read_secret
+
+    try:
+        pw = read_secret(password, password_env, password_file)
+        pw_map = read_password_map(password_map)
+        if limit is not None and limit < 0:
+            raise ExcelMgrError("--limit must be positive when provided.")
+        plan = PreviewPlan(path=path, password=pw, password_map=pw_map, limit=limit)
+        result = preview_command(plan, PandasReader())
+        logger.info("preview_completed", path=path, sheets=len(result.get("sheets", [])))
+        print(json.dumps(result, indent=2))
+    except typer.Exit:
+        raise
+    except ExcelMgrError as exc:
+        logger.error("preview_failed", error=str(exc))
+        raise typer.Exit(code=2) from exc
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.error("preview_crash", error=str(exc))
+        raise typer.Exit(code=1) from exc
+
+
 @app.command("delete-cols", help="Delete columns across files/sheets.")
 def delete_cols(
     path: Annotated[str, typer.Argument(help="File or directory.")],
@@ -322,6 +355,26 @@ def delete_cols(
         raise typer.Exit(code=2) from exc
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.error("delete_cols_crash", error=str(exc))
+        raise typer.Exit(code=1) from exc
+
+
+@app.command(help="Execute a plan file containing multiple operations.")
+def plan(
+    plan_file: Annotated[str, typer.Argument(help="Path to a JSON or YAML plan file.")],
+):
+    logger = app.state["logger"]
+    try:
+        operations = load_plan_file(plan_file)
+        results = execute_plan(operations, PandasReader(), PandasWriter())
+        logger.info("plan_completed", operations=len(results))
+        print(json.dumps({"operations": results}, indent=2))
+    except typer.Exit:
+        raise
+    except ExcelMgrError as exc:
+        logger.error("plan_failed", error=str(exc))
+        raise typer.Exit(code=2) from exc
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.error("plan_crash", error=str(exc))
         raise typer.Exit(code=1) from exc
 
 
