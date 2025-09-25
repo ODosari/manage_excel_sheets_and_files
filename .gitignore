@@ -1,10 +1,25 @@
-.idea
-.idea/*
-.venv
-.venv/*
-/venv/
-/TestData/
-*.log
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.venv*/
+venv/
+.env
+.cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors/OS
+.DS_Store
+.idea/
+.vscode/
+
+# Artifacts
 *.xlsx
-/tests/*.xlsx
-*.html
+*.xlsm
+*.zip
