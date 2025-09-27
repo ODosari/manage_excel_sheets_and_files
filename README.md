@@ -10,6 +10,17 @@ pip install .[dev]
 ```
 
 ## Commands
+## Interactive mode (default)
+Run `excelmgr` with no arguments to launch the interactive menu:
+
+```bash
+excelmgr
+```
+
+This guided mode mirrors all existing commands (combine, split, preview, delete columns, diagnostics, version), reuses the same
+validators, and honors environment/configuration and password handling. Non-interactive usage remains available for scripting,
+for example `excelmgr combine ...`.
+
 ### Combine
 ```bash
 excelmgr combine ./data --mode one-sheet --glob "*.xlsx,*.xlsm" --recursive --out combined.xlsx --add-source-column

@@ -38,7 +38,7 @@ def _patch_typer_option() -> None:
 _patch_typer_option()
 
 
-app = typer.Typer(no_args_is_help=True, add_completion=False, rich_markup_mode=None)
+app = typer.Typer(invoke_without_command=True, add_completion=False, rich_markup_mode=None)
 
 
 def _make_logger(fmt: str, level: str, file: str | None):
@@ -99,8 +99,11 @@ def _parse_sheet_option(value: str) -> SheetSpec | Literal["active"]:
     return SheetSpec(int(cleaned) if cleaned.isdigit() else cleaned)
 
 
+# The callback configures shared logging state and dispatches to the interactive
+# menu when no subcommand is provided.
 @app.callback()
 def main(
+    ctx: typer.Context,
     # settings provide defaults; IDEs can’t infer they match the Literal set
     log_format: Annotated[str, typer.Option("--log")] = settings.log_format,
     log_level: Annotated[str, typer.Option("--log-level")] = settings.log_level,
@@ -111,6 +114,12 @@ def main(
     if log_level not in {"DEBUG", "INFO", "WARN", "ERROR"}:
         raise typer.BadParameter("--log-level must be DEBUG, INFO, WARN, or ERROR.")
     app.state = {"logger": _make_logger(log_format, log_level, log_file)}
+
+    if ctx.invoked_subcommand is None and not ctx.resilient_parsing:
+        from .interactive import main as interactive_main
+
+        interactive_main()
+        raise typer.Exit()
 
 
 @app.command(help="Combine Excel files into one workbook (one sheet or multi-sheets).")
