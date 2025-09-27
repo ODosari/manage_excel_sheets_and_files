@@ -38,7 +38,7 @@ class JsonLogger:
             keys = sorted(k for k in payload if k not in {"event", "ts", "run_id", "level"})
             parts = " ".join(f"{key}={payload[key]}" for key in keys)
             return f"[{payload['level']}] {payload['event']} {parts}".rstrip()
-        return json.dumps(payload)
+        return json.dumps(payload, ensure_ascii=False)
 
     def _emit(self, event: str, *, level: str, **kwargs: Any) -> None:
         payload: dict[str, Any] = {

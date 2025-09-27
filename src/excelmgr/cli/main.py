@@ -184,7 +184,7 @@ def combine(
             progress_hooks=[hook],
         )
         logger.info("combine_completed", **result)
-        print(json.dumps(result, indent=2))
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     except typer.Exit:
         raise
     except ExcelMgrError as exc:
@@ -253,7 +253,7 @@ def split(
             progress_hooks=[hook],
         )
         logger.info("split_completed", **result)
-        print(json.dumps(result, indent=2))
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     except typer.Exit:
         raise
     except ExcelMgrError as exc:
@@ -284,7 +284,7 @@ def preview(
         plan = PreviewPlan(path=path, password=pw, password_map=pw_map, limit=limit)
         result = preview_command(plan, PandasReader())
         logger.info("preview_completed", path=path, sheets=len(result.get("sheets", [])))
-        print(json.dumps(result, indent=2))
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     except typer.Exit:
         raise
     except ExcelMgrError as exc:
@@ -388,7 +388,7 @@ def delete_cols(
             progress_hooks=[hook],
         )
         logger.info("delete_cols_completed", **result)
-        print(json.dumps(result, indent=2))
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     except typer.Exit:
         raise
     except ExcelMgrError as exc:
@@ -414,7 +414,7 @@ def plan(
             progress_hooks=[hook],
         )
         logger.info("plan_completed", operations=len(results))
-        print(json.dumps({"operations": results}, indent=2))
+    print(json.dumps({"operations": results}, indent=2, ensure_ascii=False))
     except typer.Exit:
         raise
     except ExcelMgrError as exc:
@@ -444,7 +444,7 @@ def diagnose():
             "macro_policy": settings.macro_policy,
         },
     }
-    print(json.dumps(info, indent=2))
+    print(json.dumps(info, indent=2, ensure_ascii=False))
 
 
 @app.command(help="Show version.")

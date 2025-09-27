@@ -43,6 +43,7 @@ class CombinePlan:
     password: str | None = None
     password_map: Mapping[str, str] | None = None
     output_format: Literal["xlsx", "csv", "parquet"] = "xlsx"
+    csv_add_bom: bool = False
     dry_run: bool = False
     destination: Destination | None = None
 
@@ -60,6 +61,7 @@ class SplitPlan:
     password: str | None = None
     password_map: Mapping[str, str] | None = None
     output_format: Literal["xlsx", "csv", "parquet"] = "xlsx"
+    csv_add_bom: bool = False
     dry_run: bool = False
     destination: Destination | None = None
 

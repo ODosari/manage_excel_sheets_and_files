@@ -5,9 +5,11 @@ from __future__ import annotations
 import csv
 import json
 from collections.abc import Mapping
+from io import StringIO
 from pathlib import Path
 
 from excelmgr.core.errors import ExcelMgrError
+from excelmgr.util.text import read_text
 
 
 def load_password_map(
@@ -40,7 +42,7 @@ def load_password_map(
 
     if path.suffix.lower() == ".json":
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(read_text(path))
         except json.JSONDecodeError as exc:  # pragma: no cover - bubble up friendly error
             raise ExcelMgrError(f"Failed to parse password map JSON: {exc}") from exc
         if not isinstance(data, Mapping):
@@ -48,23 +50,23 @@ def load_password_map(
         return {str(key): str(value) for key, value in data.items()}
 
     try:
-        with open(path, encoding="utf-8", newline="") as fh:
-            reader = csv.DictReader(fh)
-            if reader.fieldnames is None:
-                raise ExcelMgrError("Password CSV must include a header row with 'path' and 'password'.")
-            normalized = {name.strip().lower() for name in reader.fieldnames if name}
-            required = {"path", "password"}
-            if not required.issubset(normalized):
-                raise ExcelMgrError("Password CSV must include 'path' and 'password' columns.")
-            result: dict[str, str] = {}
-            for row in reader:
-                lowered = {k.strip().lower(): (v or "") for k, v in row.items() if k}
-                key = lowered.get("path", "").strip()
-                value = lowered.get("password", "")
-                if not key:
-                    continue
-                result[key] = value
-            return result
+        csv_text = read_text(path)
+        reader = csv.DictReader(StringIO(csv_text))
+        if reader.fieldnames is None:
+            raise ExcelMgrError("Password CSV must include a header row with 'path' and 'password'.")
+        normalized = {name.strip().lower() for name in reader.fieldnames if name}
+        required = {"path", "password"}
+        if not required.issubset(normalized):
+            raise ExcelMgrError("Password CSV must include 'path' and 'password' columns.")
+        result: dict[str, str] = {}
+        for row in reader:
+            lowered = {k.strip().lower(): (v or "") for k, v in row.items() if k}
+            key = lowered.get("path", "").strip()
+            value = lowered.get("password", "")
+            if not key:
+                continue
+            result[key] = value
+        return result
     except ExcelMgrError:
         raise
     except Exception as exc:  # pragma: no cover - defensive guard

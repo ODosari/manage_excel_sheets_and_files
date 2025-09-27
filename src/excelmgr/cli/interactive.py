@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,7 @@ from excelmgr.core.passwords import resolve_password
 from excelmgr.core.plan_runner import execute_plan, load_plan_file
 from excelmgr.core.preview import preview as preview_command
 from excelmgr.core.split import split as split_command
+from excelmgr.util.text import write_text
 
 try:
     import pyperclip  # type: ignore[import-not-found]
@@ -58,8 +60,40 @@ class OperationOutcome:
     dry_run: bool = False
 
 
-SAFE_TOKEN = re.compile(r"[^A-Za-z0-9_.-]+")
+ILLEGAL_FILENAME = re.compile(r"[\x00-\x1F\x7F<>:"/\\|?*]")
 BACK_KEYWORDS = {"back", "b", ".."}
+
+
+def _normalize_token(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    return normalized
+
+
+def _simplify(value: str) -> str:
+    nfkd = unicodedata.normalize("NFKD", value)
+    stripped = "".join(ch for ch in nfkd if not unicodedata.combining(ch))
+    return stripped.casefold()
+
+
+def _parse_numeric_token(value: str) -> int:
+    normalized = unicodedata.normalize("NFKC", value)
+    digits: list[str] = []
+    for ch in normalized:
+        if ch.isdigit():
+            try:
+                digits.append(str(unicodedata.digit(ch)))
+            except (TypeError, ValueError):
+                digits.append(ch)
+        elif ch in {"+", "-"} and not digits:
+            digits.append(ch)
+        else:
+            raise ValueError
+    if not digits:
+        raise ValueError
+    return int("".join(digits))
+
+
+BACK_KEYWORDS_NORMALIZED = {_simplify(word) for word in BACK_KEYWORDS}
 
 
 def _get_logger():
@@ -82,8 +116,12 @@ def _progress_events_enabled(logger) -> bool:
 def _sanitize_token(token: str | None) -> str:
     if not token:
         return "data"
-    cleaned = SAFE_TOKEN.sub("_", token)
+    normalized = _normalize_token(str(token))
+    cleaned = ILLEGAL_FILENAME.sub("_", normalized)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = re.sub(r"_+", "_", cleaned)
     cleaned = cleaned.strip("_")
+    cleaned = unicodedata.normalize("NFC", cleaned)
     return cleaned or "data"
 
 
@@ -239,24 +277,35 @@ def prompt_menu(
         if not raw:
             typer.secho("Please choose an option.", fg=typer.colors.YELLOW)
             continue
-        lowered = raw.lower()
-        if lowered in BACK_KEYWORDS or lowered == "0":
+        simplified = _simplify(raw)
+        normalized_raw = _normalize_token(raw)
+        if simplified in BACK_KEYWORDS_NORMALIZED or simplified == "0":
             return "back"
-        if show_exit and exit_index is not None and lowered in {str(exit_index), "exit", "quit", "q"}:
+        if show_exit and exit_index is not None and simplified in {
+            _simplify("exit"),
+            _simplify("quit"),
+            _simplify("q"),
+        }:
             return "exit"
-        if lowered.isdigit():
-            idx = int(lowered)
+        if normalized_raw.isdigit():
+            idx = _parse_numeric_token(normalized_raw)
+            if idx == 0:
+                return "back"
             if 1 <= idx <= len(items):
                 return items[idx - 1].key
             if show_exit and exit_index is not None and idx == exit_index:
                 return "exit"
         matches: list[str] = []
         for item in items:
-            candidates = [item.key.lower(), item.label.lower(), *[alias.lower() for alias in item.aliases]]
-            if lowered in candidates:
+            candidates = [
+                _simplify(item.key),
+                _simplify(item.label),
+                *[_simplify(alias) for alias in item.aliases],
+            ]
+            if simplified in candidates:
                 matches = [item.key]
                 break
-            if any(candidate.startswith(lowered) for candidate in candidates):
+            if any(candidate.startswith(simplified) for candidate in candidates):
                 matches.append(item.key)
         if len(dict.fromkeys(matches)) == 1:
             return matches[0]
@@ -264,7 +313,7 @@ def prompt_menu(
 
 
 def _ensure_not_back(value: str) -> str:
-    if value.lower() in BACK_KEYWORDS:
+    if _simplify(value) in BACK_KEYWORDS_NORMALIZED:
         raise BackRequested
     return value
 
@@ -378,10 +427,8 @@ def _parse_index_list(raw: str, total: int) -> list[int]:
             continue
         if "-" in token:
             start_str, _, end_str = token.partition("-")
-            if not start_str.strip().isdigit() or not end_str.strip().isdigit():
-                raise ValueError
-            start = int(start_str.strip())
-            end = int(end_str.strip())
+            start = _parse_numeric_token(start_str.strip())
+            end = _parse_numeric_token(end_str.strip())
             if start < 1 or end < 1 or end < start:
                 raise ValueError
             for value in range(start, end + 1):
@@ -389,9 +436,7 @@ def _parse_index_list(raw: str, total: int) -> list[int]:
                     raise ValueError
                 result.append(value)
         else:
-            if not token.isdigit():
-                raise ValueError
-            index = int(token)
+            index = _parse_numeric_token(token)
             if not (1 <= index <= total):
                 raise ValueError
             result.append(index)
@@ -419,19 +464,28 @@ def pick_sheets(path: str, *, password: str | None, allow_multi: bool, allow_all
         for index, name in enumerate(names, start=1):
             typer.echo(f"  {index}) {name}")
         suffix = " (comma/range or 'all' allowed)" if allow_multi and allow_all else ""
-        raw = typer.prompt(f"Select a sheet by number{suffix}").strip().lower()
-        if raw in BACK_KEYWORDS or raw == "0":
+        raw_input = typer.prompt(f"Select a sheet by number{suffix}").strip()
+        simplified = _simplify(raw_input)
+        if simplified in BACK_KEYWORDS_NORMALIZED or simplified == "0":
             raise BackRequested
-        if allow_multi and allow_all and raw == "all":
+        if allow_multi and allow_all and simplified == _simplify("all"):
             return "__ALL__"
         try:
-            if allow_multi and any(sep in raw for sep in {",", "-"}):
-                indexes = _parse_index_list(raw, len(names))
+            normalized_input = _normalize_token(raw_input)
+            if allow_multi and any(sep in raw_input for sep in {",", "-"}):
+                indexes = _parse_index_list(normalized_input.lower(), len(names))
                 selected = [names[i - 1] for i in indexes]
                 typer.echo("Selected sheets: " + ", ".join(selected))
                 return selected
-            index = int(raw)
+            index = _parse_numeric_token(normalized_input)
         except (ValueError, TypeError):
+            matches = [
+                name
+                for name in names
+                if _simplify(name).startswith(simplified)
+            ]
+            if len(matches) == 1:
+                return [matches[0]]
             typer.secho("Invalid selection. Try again.", fg=typer.colors.RED)
             continue
         if 1 <= index <= len(names):
@@ -619,6 +673,9 @@ def _prompt_combine_plan() -> CombinePayload:
         ],
         context="Combine ▸ Format",
     )
+    add_bom = False
+    if output_format_choice == "csv":
+        add_bom = _prompt_confirm("Add UTF-8 BOM for compatibility?", default=False)
     if mode_choice == "multi_sheets" and output_format_choice != "xlsx":
         typer.secho("Multi-sheet mode requires Excel output format.", fg=typer.colors.RED)
         raise BackRequested
@@ -646,6 +703,7 @@ def _prompt_combine_plan() -> CombinePayload:
         password=password,
         password_map=password_map,
         output_format=output_format_choice,  # type: ignore[arg-type]
+        csv_add_bom=add_bom,
         dry_run=dry_run,
     )
     return CombinePayload(plan=plan, output_path=output_path)
@@ -678,6 +736,9 @@ def _prompt_split_plan() -> SplitPayload:
         ],
         context="Split ▸ Format",
     )
+    add_bom = False
+    if output_format_choice == "csv":
+        add_bom = _prompt_confirm("Add UTF-8 BOM for compatibility?", default=False)
     if destination_choice == "sheets" and output_format_choice != "xlsx":
         typer.secho("Sheet destination requires Excel output format.", fg=typer.colors.RED)
         raise BackRequested
@@ -709,6 +770,7 @@ def _prompt_split_plan() -> SplitPayload:
         password=password,
         password_map=password_map,
         output_format=output_format_choice,  # type: ignore[arg-type]
+        csv_add_bom=add_bom,
         dry_run=dry_run,
     )
     if destination_choice == "files":
@@ -958,7 +1020,7 @@ def _execute_preview(payload: PreviewPayload) -> OperationOutcome:
         progress.manual_cycle()
         result = preview_command(payload.plan, PandasReader())
     logger.info("preview_completed", path=payload.plan.path, sheets=len(result.get("sheets", [])))
-    payload.output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    write_text(payload.output_path, json.dumps(result, indent=2, ensure_ascii=False))
     return OperationOutcome(result=result, paths=[payload.output_path.resolve()], dry_run=False)
 
 
@@ -1018,7 +1080,7 @@ def _execute_plan(payload: PlanPayload) -> OperationOutcome:
         )
     summary = {"operations": results}
     logger.info("plan_completed", operations=len(results))
-    payload.output_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    write_text(payload.output_path, json.dumps(summary, indent=2, ensure_ascii=False))
     return OperationOutcome(result=summary, paths=[payload.output_path.resolve()], dry_run=False)
 
 
@@ -1034,7 +1096,7 @@ def _show_outcome(name: str, outcome: OperationOutcome) -> None:
     elif outcome.dry_run:
         typer.echo("No files written (dry run).")
     typer.echo()
-    typer.echo(json.dumps(outcome.result, indent=2))
+    typer.echo(json.dumps(outcome.result, indent=2, ensure_ascii=False))
 
 
 def _prompt_next_action(message: str, *, outcome: OperationOutcome | None = None) -> str:
@@ -1101,8 +1163,12 @@ def _run_version() -> None:
 
 
 def run_interactive() -> None:
-    cli_main.app.state.setdefault("interactive_show_events", False)
-    typer.secho("Excel Manager — interactive mode", bold=True)
+    state = cli_main.app.state
+    state.setdefault("interactive_show_events", False)
+    if not state.get("shown_welcome", False):
+        typer.echo("Welcome to Excel Manager — a guided CLI for combining, splitting, previewing, and fixing Excel files.")
+        typer.echo("Use the numbered menus; type “back” anytime to return to the previous step.")
+        state["shown_welcome"] = True
     actions: dict[str, Callable[[], None]] = {
         "combine": lambda: _run_with_retry("Combine", _prompt_combine_plan, _execute_combine),
         "split": lambda: _run_with_retry("Split", _prompt_split_plan, _execute_split),
