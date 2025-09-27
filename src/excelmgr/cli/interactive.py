@@ -60,7 +60,7 @@ class OperationOutcome:
     dry_run: bool = False
 
 
-ILLEGAL_FILENAME = re.compile(r"[\x00-\x1F\x7F<>:"/\\|?*]")
+ILLEGAL_FILENAME = re.compile(r'[\x00-\x1F\x7F<>:"/\\|?*]')
 BACK_KEYWORDS = {"back", "b", ".."}
 
 
