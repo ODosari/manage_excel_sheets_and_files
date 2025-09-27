@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +34,11 @@ from excelmgr.core.plan_runner import execute_plan, load_plan_file
 from excelmgr.core.preview import preview as preview_command
 from excelmgr.core.split import split as split_command
 
+try:
+    import pyperclip  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - optional dependency
+    pyperclip = None  # type: ignore[assignment]
+
 
 class BackRequested(Exception):
     """Raised when the user requests to return to the previous menu."""
@@ -55,6 +64,19 @@ BACK_KEYWORDS = {"back", "b", ".."}
 
 def _get_logger():
     return cli_main.app.state["logger"]
+
+
+def _progress_events_enabled(logger) -> bool:
+    toggle = bool(cli_main.app.state.get("interactive_show_events", False))
+    if toggle:
+        return True
+    fmt = getattr(logger, "_fmt", "json")
+    if fmt != "json":
+        return True
+    log_impl = getattr(logger, "_logger", None)
+    if log_impl and any(isinstance(handler, logging.FileHandler) for handler in getattr(log_impl, "handlers", [])):
+        return True
+    return False
 
 
 def _sanitize_token(token: str | None) -> str:
@@ -89,26 +111,124 @@ def _operation_out_dir(reference: Path | None, op: str) -> Path:
     return out_dir
 
 
-def _compose_filename(*, base: str | None, src: Path | None, sheet: str | None, extra: str | None, timestamp: str, suffix: str) -> str:
-    parts: list[str] = []
+def _build_name_tokens(*, base: str | None, src: Path | None, sheet: str | None, extra: str | None) -> list[str]:
+    tokens: list[str] = []
     if base:
-        parts.append(_sanitize_token(base))
+        tokens.append(base)
     elif src is not None:
-        parts.append(_sanitize_token(src.stem))
+        tokens.append(src.stem)
     if sheet:
-        parts.append(_sanitize_token(sheet))
+        tokens.append(sheet)
     if extra:
-        parts.append(_sanitize_token(extra))
-    parts.append(timestamp)
-    stem = "__".join(filter(None, parts))
+        tokens.append(extra)
+
+    cleaned: list[str] = []
+    for token in tokens:
+        sanitized = _sanitize_token(token)
+        if not sanitized:
+            continue
+        if not cleaned or cleaned[-1] != sanitized:
+            cleaned.append(sanitized)
+    return cleaned
+
+
+def _compose_filename(*, base: str | None, src: Path | None, sheet: str | None, extra: str | None, timestamp: str, suffix: str) -> str:
+    tokens = _build_name_tokens(base=base, src=src, sheet=sheet, extra=extra)
+    tokens.append(timestamp)
+    stem = "__".join(tokens)
     return f"{stem}{suffix}"
 
 
-def prompt_menu(title: str, items: Sequence[MenuItem], *, show_exit: bool = False) -> str:
+def _preview_filename(*, base: str | None, src: Path | None, sheet: str | None, extra: str | None, timestamp_placeholder: str, suffix: str, extra_placeholder_display: str | None = None) -> str:
+    tokens = _build_name_tokens(base=base, src=src, sheet=sheet, extra=extra)
+    tokens.append(timestamp_placeholder)
+    stem = "__".join(tokens)
+    if extra and extra_placeholder_display:
+        stem = stem.replace(_sanitize_token(extra), extra_placeholder_display)
+    return f"{stem}{suffix}"
+
+
+def _preview_output_destination(out_dir: Path, sample_name: str) -> None:
+    typer.echo()
+    typer.secho("Outputs will be written under:", fg=typer.colors.BLUE)
+    typer.echo(f"  {out_dir.resolve()}")
+    typer.echo(f"  e.g., {sample_name}")
+
+
+def _common_output_dir(paths: Sequence[Path]) -> Path | None:
+    if not paths:
+        return None
+    resolved = [path.resolve() for path in paths]
+    roots = [p if p.is_dir() else p.parent for p in resolved]
+    try:
+        common = os.path.commonpath([str(root) for root in roots])
+    except ValueError:
+        return roots[0]
+    return Path(common)
+
+
+def _open_output_folder(paths: Sequence[Path]) -> None:
+    target = _common_output_dir(paths)
+    if target is None:
+        typer.secho("No output paths available to open.", fg=typer.colors.YELLOW)
+        return
+    if not target.exists():
+        typer.secho(f"Path does not exist yet: {target}", fg=typer.colors.YELLOW)
+        return
+    command: list[str]
+    if sys.platform.startswith("darwin"):
+        command = ["open", str(target)]
+    elif os.name == "nt":
+        command = ["cmd", "/c", "start", "", str(target)]
+    else:
+        command = ["xdg-open", str(target)]
+    try:
+        completed = subprocess.run(command, check=False)
+        if completed.returncode == 0:
+            typer.secho(f"Opened {target}", fg=typer.colors.GREEN)
+        else:
+            typer.secho(
+                f"Open command exited with status {completed.returncode}.",
+                fg=typer.colors.YELLOW,
+            )
+    except FileNotFoundError:
+        typer.secho("Unable to open folder: command not found.", fg=typer.colors.RED)
+
+
+def _copy_paths_to_clipboard(paths: Sequence[Path]) -> bool:
+    if not pyperclip:
+        return False
+    try:
+        joined = "\n".join(str(path.resolve()) for path in paths)
+        pyperclip.copy(joined)
+    except pyperclip.PyperclipException:  # type: ignore[attr-defined]
+        return False
+    return True
+
+
+def _toggle_progress_logging() -> None:
+    current = bool(cli_main.app.state.get("interactive_show_events", False))
+    cli_main.app.state["interactive_show_events"] = not current
+    status = "enabled" if not current else "disabled"
+    typer.secho(f"JSON progress logging {status}.", fg=typer.colors.GREEN)
+    if not current:
+        typer.echo("Structured event output will appear on the next run.")
+
+
+def prompt_menu(
+    title: str,
+    items: Sequence[MenuItem],
+    *,
+    show_exit: bool = False,
+    context: str | None = None,
+    back_label: str = "Back",
+) -> str:
     while True:
         typer.echo()
+        if context:
+            typer.secho(context, fg=typer.colors.CYAN)
         typer.secho(title, bold=True)
-        typer.echo("  0) Back")
+        typer.echo(f"  0) {back_label}")
         for index, item in enumerate(items, start=1):
             typer.echo(f"  {index}) {item.label}")
         exit_index = None
@@ -183,68 +303,58 @@ def _prompt_confirm(message: str, *, default: bool = True) -> bool:
         typer.secho("Please answer yes or no.", fg=typer.colors.YELLOW)
 
 
-def _prompt_password_inputs() -> tuple[str | None, dict[str, str] | None]:
-    password_source: dict[str, str | None] = {
-        "password": None,
-        "password_env": None,
-        "password_file": None,
-    }
-    password_map_path: str | None = None
-    loaded_password_map: dict[str, str] | None = None
+def _prompt_password_inputs(*, context: str | None = None) -> tuple[str | None, dict[str, str] | None]:
     items = [
         MenuItem("none", "No password (open)", aliases=("open",)),
         MenuItem("manual", "Type password manually"),
         MenuItem("env", "Read password from environment variable", aliases=("environment", "environment variable")),
         MenuItem("file", "Load password from file"),
         MenuItem("map", "Use password map file"),
-        MenuItem("done", "Done"),
     ]
     while True:
-        typer.echo()
-        typer.secho("Password options", bold=True)
-        summary: list[str] = []
-        if password_source["password"]:
-            summary.append("manual password set")
-        if password_source["password_env"]:
-            summary.append(f"env:{password_source['password_env']}")
-        if password_source["password_file"]:
-            summary.append(f"file:{password_source['password_file']}")
-        if password_map_path:
-            summary.append(f"map:{password_map_path}")
-        if summary:
-            typer.echo("  " + ", ".join(summary))
-        else:
-            typer.echo("  No password settings configured.")
-        choice = prompt_menu("Choose a password source", items)
+        choice = prompt_menu(
+            "Choose a password source",
+            items,
+            context=context,
+        )
         if choice == "back":
             raise BackRequested
         if choice == "none":
-            password_source = {"password": None, "password_env": None, "password_file": None}
-        elif choice == "manual":
+            typer.echo("Password: <none>")
+            return None, None
+        if choice == "manual":
             password = _prompt_text("Password", allow_empty=False)
-            password_source = {"password": password, "password_env": None, "password_file": None}
-        elif choice == "env":
+            typer.echo("Password: typed manually")
+            return password, None
+        if choice == "env":
             env_name = _prompt_text("Environment variable name", allow_empty=False)
-            password_source = {"password": None, "password_env": env_name, "password_file": None}
-        elif choice == "file":
-            file_path = _prompt_text("Path to password file", allow_empty=False)
-            password_source = {"password": None, "password_env": None, "password_file": file_path}
-        elif choice == "map":
             try:
-                password_map_path = _prompt_text("Path to password map file", allow_empty=False)
-                loaded_password_map = read_password_map(password_map_path)
-                typer.secho("Password map loaded.", fg=typer.colors.GREEN)
+                resolved = read_secret(None, env_name, None)
             except typer.BadParameter as exc:
                 typer.secho(str(exc), fg=typer.colors.RED)
-                password_map_path = None
-                loaded_password_map = None
-        elif choice == "done":
+                continue
+            if resolved is None:
+                typer.secho(f"Environment variable {env_name} is not set.", fg=typer.colors.YELLOW)
+            typer.echo(f"Password: environment variable {env_name}")
+            return resolved, None
+        if choice == "file":
+            file_path = Path(_prompt_text("Path to password file", allow_empty=False)).expanduser()
             try:
-                resolved = read_secret(**password_source)
-                password_map = loaded_password_map if password_map_path else None
-                return resolved, password_map
+                resolved = read_secret(None, None, str(file_path))
             except typer.BadParameter as exc:
                 typer.secho(str(exc), fg=typer.colors.RED)
+                continue
+            typer.echo(f"Password: file {file_path.resolve()}")
+            return resolved, None
+        if choice == "map":
+            map_path = Path(_prompt_text("Path to password map file", allow_empty=False)).expanduser()
+            try:
+                password_map = read_password_map(str(map_path))
+            except typer.BadParameter as exc:
+                typer.secho(str(exc), fg=typer.colors.RED)
+                continue
+            typer.echo(f"Password map: {map_path.resolve()}")
+            return None, password_map
 
 
 def _resolve_password(path: str, password: str | None, password_map: dict[str, str] | None) -> str | None:
@@ -300,7 +410,7 @@ def pick_sheets(path: str, *, password: str | None, allow_multi: bool, allow_all
         raise ExcelMgrError("No sheets found in the workbook.")
     if len(names) == 1:
         only = names[0]
-        if _prompt_confirm(f'Found 1 sheet: "{only}". Use this sheet?', default=True):
+        if _prompt_confirm(f'Found 1 sheet (index 1): "{only}". Use this sheet?', default=True):
             return [only]
     while True:
         typer.echo()
@@ -335,6 +445,7 @@ class VisualProgress:
     def __init__(self, logger) -> None:
         self._logger = logger
         self._hook = cli_main._make_progress_hook(logger)
+        self._show_events = _progress_events_enabled(logger)
         self._progress = Progress(
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
@@ -380,7 +491,8 @@ class VisualProgress:
         self._update_description(stage)
 
     def hook(self, event: str, payload: dict[str, object]) -> None:
-        self._hook(event, payload)
+        if self._show_events:
+            self._hook(event, payload)
         if event.endswith("_start"):
             self._advance_stage("Reading")
             self._advance_stage("Planning")
@@ -482,10 +594,11 @@ def _prompt_combine_plan() -> CombinePayload:
             MenuItem("one_sheet", "One sheet"),
             MenuItem("multi_sheets", "Multi sheets"),
         ],
+        context="Combine ▸ Mode",
     )
     glob_pattern = _prompt_optional_text("Glob pattern (leave blank for none)")
     recursive = _prompt_confirm("Search recursively?", default=False)
-    password, password_map = _prompt_password_inputs()
+    password, password_map = _prompt_password_inputs(context="Combine ▸ Password")
     sample = _sample_path(inputs)
     include: Sequence[SheetSpec] | str
     if sample is not None:
@@ -504,6 +617,7 @@ def _prompt_combine_plan() -> CombinePayload:
             MenuItem("csv", "CSV"),
             MenuItem("parquet", "Parquet"),
         ],
+        context="Combine ▸ Format",
     )
     if mode_choice == "multi_sheets" and output_format_choice != "xlsx":
         typer.secho("Multi-sheet mode requires Excel output format.", fg=typer.colors.RED)
@@ -519,6 +633,7 @@ def _prompt_combine_plan() -> CombinePayload:
     base_name = "Combined" if (not sample or not sample.is_file() or len(inputs) > 1) else sample.stem
     filename = _compose_filename(base=base_name, src=sample, sheet=None, extra=None, timestamp=timestamp, suffix=suffix)
     output_path = out_dir / filename
+    _preview_output_destination(out_dir, filename)
     plan = CombinePlan(
         inputs=inputs,
         glob=glob_pattern,
@@ -539,7 +654,7 @@ def _prompt_combine_plan() -> CombinePayload:
 def _prompt_split_plan() -> SplitPayload:
     typer.secho("\nSplit workflow", bold=True)
     input_file = _prompt_text("Input workbook path")
-    password, password_map = _prompt_password_inputs()
+    password, password_map = _prompt_password_inputs(context="Split ▸ Password")
     pw = _resolve_password(input_file, password, password_map)
     selection = pick_sheets(input_file, password=pw, allow_multi=False, allow_all=False)
     sheet_name = selection[0]
@@ -551,6 +666,7 @@ def _prompt_split_plan() -> SplitPayload:
             MenuItem("files", "Create files (one file per partition)"),
             MenuItem("sheets", "Create sheets (one sheet per partition in a single file)"),
         ],
+        context="Split ▸ Destination",
     )
     include_nan = _prompt_confirm("Include rows with missing split values?", default=False)
     output_format_choice = prompt_menu(
@@ -560,6 +676,7 @@ def _prompt_split_plan() -> SplitPayload:
             MenuItem("csv", "CSV"),
             MenuItem("parquet", "Parquet"),
         ],
+        context="Split ▸ Format",
     )
     if destination_choice == "sheets" and output_format_choice != "xlsx":
         typer.secho("Sheet destination requires Excel output format.", fg=typer.colors.RED)
@@ -568,6 +685,8 @@ def _prompt_split_plan() -> SplitPayload:
     out_dir = _operation_out_dir(Path(input_file), "split")
     timestamp = _current_timestamp()
     output_filename: str | None = None
+    suffix_map = {"xlsx": ".xlsx", "csv": ".csv", "parquet": ".parquet"}
+    suffix = suffix_map[output_format_choice]
     if destination_choice == "sheets":
         output_filename = _compose_filename(
             base=None,
@@ -577,6 +696,7 @@ def _prompt_split_plan() -> SplitPayload:
             timestamp=timestamp,
             suffix=".xlsx",
         )
+        _preview_output_destination(out_dir, output_filename)
     plan = SplitPlan(
         input_file=input_file,
         sheet=sheet_spec,
@@ -591,6 +711,17 @@ def _prompt_split_plan() -> SplitPayload:
         output_format=output_format_choice,  # type: ignore[arg-type]
         dry_run=dry_run,
     )
+    if destination_choice == "files":
+        sample = _preview_filename(
+            base=None,
+            src=Path(input_file),
+            sheet=sheet_name,
+            extra="PARTITION",
+            timestamp_placeholder="YYYYMMDD_HHMMSS",
+            suffix=suffix,
+            extra_placeholder_display="<partition>",
+        )
+        _preview_output_destination(out_dir, sample)
     return SplitPayload(plan=plan, source_path=Path(input_file), sheet_name=sheet_name, output_dir=out_dir, timestamp=timestamp)
 
 
@@ -602,7 +733,7 @@ def _prompt_preview_plan() -> PreviewPayload:
         typer.secho("Limit must be a positive integer.", fg=typer.colors.RED)
         raise BackRequested
     limit = int(limit_raw) if limit_raw else None
-    password, password_map = _prompt_password_inputs()
+    password, password_map = _prompt_password_inputs(context="Preview ▸ Password")
     plan = PreviewPlan(path=path, password=password, password_map=password_map, limit=limit)
     out_dir = _operation_out_dir(Path(path), "preview")
     timestamp = _current_timestamp()
@@ -615,6 +746,7 @@ def _prompt_preview_plan() -> PreviewPayload:
         suffix=".json",
     )
     output_path = out_dir / filename
+    _preview_output_destination(out_dir, filename)
     return PreviewPayload(plan=plan, output_path=output_path)
 
 
@@ -624,6 +756,7 @@ def _prompt_delete_spec() -> DeletePayload:
     match_choice = prompt_menu(
         "Match columns by",
         [MenuItem("names", "Names"), MenuItem("index", "Index")],
+        context="Delete ▸ Match by",
     )
     targets_raw = _prompt_text("Columns to delete (comma separated)")
     if match_choice == "index":
@@ -644,6 +777,7 @@ def _prompt_delete_spec() -> DeletePayload:
             MenuItem("endswith", "Ends with"),
             MenuItem("regex", "Regular expression"),
         ],
+        context="Delete ▸ Strategy",
     )
     all_sheets = _prompt_confirm("Apply to all sheets?", default=False)
     sheet_selector: str | int | None = None
@@ -665,11 +799,12 @@ def _prompt_delete_spec() -> DeletePayload:
     on_missing = prompt_menu(
         "Missing columns handling",
         [MenuItem("ignore", "Ignore"), MenuItem("error", "Error")],
+        context="Delete ▸ Missing columns",
     )
     dry_run = _prompt_confirm("Dry run (no files written)?", default=False)
     glob_pattern = _prompt_optional_text("Glob pattern (leave blank for none)")
     recursive = _prompt_confirm("Search recursively?", default=False)
-    password, password_map = _prompt_password_inputs()
+    password, password_map = _prompt_password_inputs(context="Delete ▸ Password")
     spec = DeleteSpec(
         path=path,
         targets=targets,  # type: ignore[list-item]
@@ -696,6 +831,19 @@ def _prompt_delete_spec() -> DeletePayload:
         sources = []
     out_dir = _operation_out_dir(base_path if sources else None, "delete")
     timestamp = _current_timestamp()
+    if not inplace:
+        sample_src = sources[0] if sources else base_path
+        suffix = sample_src.suffix if sample_src and sample_src.suffix else ".xlsx"
+        sample_name = _preview_filename(
+            base=None,
+            src=sample_src if sample_src and sample_src.exists() else base_path,
+            sheet=None,
+            extra="cleaned",
+            timestamp_placeholder="YYYYMMDD_HHMMSS",
+            suffix=suffix,
+            extra_placeholder_display=None,
+        )
+        _preview_output_destination(out_dir, sample_name)
     return DeletePayload(spec=spec, source_paths=sources, output_dir=out_dir, timestamp=timestamp)
 
 
@@ -737,8 +885,8 @@ def _execute_split(payload: SplitPayload) -> OperationOutcome:
             writer,
             progress_hooks=[progress.hook],
         )
-    logger.info("split_completed", **result)
     if payload.plan.dry_run:
+        logger.info("split_completed", **result)
         return OperationOutcome(result=result, paths=[], dry_run=True)
     paths: list[Path] = []
     if payload.plan.to == "sheets":
@@ -753,8 +901,16 @@ def _execute_split(payload: SplitPayload) -> OperationOutcome:
         )
         if out_path != final_path:
             out_path.replace(final_path)
+        progress.hook(
+            "split_partition_finalized",
+            {"original": str(out_path), "final": str(final_path)},
+        )
         result["out"] = str(final_path)
         paths.append(final_path.resolve())
+        progress.hook(
+            "split_outputs_finalized",
+            {"outputs": [str(final_path)], "output_dir": str(payload.output_dir.resolve())},
+        )
     else:
         renamed: list[str] = []
         for original in result.get("outputs", []):
@@ -775,10 +931,24 @@ def _execute_split(payload: SplitPayload) -> OperationOutcome:
             if orig_path != final:
                 final.parent.mkdir(parents=True, exist_ok=True)
                 orig_path.replace(final)
+                progress.hook(
+                    "split_partition_finalized",
+                    {"original": str(orig_path), "final": str(final)},
+                )
+            else:
+                progress.hook(
+                    "split_partition_finalized",
+                    {"original": str(orig_path), "final": str(final)},
+                )
             renamed.append(str(final))
             paths.append(final.resolve())
         if renamed:
             result["outputs"] = renamed
+        progress.hook(
+            "split_outputs_finalized",
+            {"outputs": result.get("outputs", []), "output_dir": str(payload.output_dir.resolve())},
+        )
+    logger.info("split_completed", **result)
     return OperationOutcome(result=result, paths=paths, dry_run=False)
 
 
@@ -803,8 +973,8 @@ def _execute_delete(payload: DeletePayload) -> OperationOutcome:
             writer,
             progress_hooks=[progress.hook],
         )
-    logger.info("delete_cols_completed", **result)
     if payload.spec.dry_run or payload.spec.inplace:
+        logger.info("delete_cols_completed", **result)
         return OperationOutcome(result=result, paths=[], dry_run=payload.spec.dry_run)
     final_paths: list[Path] = []
     renamed_items: list[dict] = []
@@ -832,6 +1002,7 @@ def _execute_delete(payload: DeletePayload) -> OperationOutcome:
         final_paths.append(final.resolve())
     if renamed_items:
         result["items"] = renamed_items
+    logger.info("delete_cols_completed", **result)
     return OperationOutcome(result=result, paths=final_paths, dry_run=False)
 
 
@@ -866,17 +1037,17 @@ def _show_outcome(name: str, outcome: OperationOutcome) -> None:
     typer.echo(json.dumps(outcome.result, indent=2))
 
 
-def _prompt_next_action(message: str) -> bool:
-    choice = prompt_menu(
-        message,
-        [
-            MenuItem("again", "Try again"),
-            MenuItem("main", "Back to main menu"),
-        ],
-    )
-    if choice == "back" or choice == "main":
-        return False
-    return True
+def _prompt_next_action(message: str, *, outcome: OperationOutcome | None = None) -> str:
+    items: list[MenuItem] = [MenuItem("again", "Run again")]
+    if outcome and outcome.paths:
+        items.append(MenuItem("open", "Open output folder"))
+        if pyperclip:
+            items.append(MenuItem("copy", "Copy output paths to clipboard"))
+    items.append(MenuItem("main", "Back to main menu"))
+    choice = prompt_menu(message, items, back_label="Main menu")
+    if choice == "back":
+        return "main"
+    return choice
 
 
 def _run_with_retry(name: str, builder: Callable[[], object], executor: Callable[[object], OperationOutcome]) -> None:
@@ -889,15 +1060,29 @@ def _run_with_retry(name: str, builder: Callable[[], object], executor: Callable
             outcome = executor(payload)
         except ExcelMgrError as exc:
             typer.secho(str(exc), fg=typer.colors.RED)
-            if not _prompt_next_action(f"{name} failed. What next?"):
+            action = _prompt_next_action(f"{name} failed. What next?")
+            if action != "again":
                 return
         except typer.BadParameter as exc:
             typer.secho(str(exc), fg=typer.colors.RED)
-            if not _prompt_next_action(f"{name} failed. What next?"):
+            action = _prompt_next_action(f"{name} failed. What next?")
+            if action != "again":
                 return
         else:
             _show_outcome(name, outcome)
-            if not _prompt_next_action("What next?"):
+            while True:
+                action = _prompt_next_action("What next?", outcome=outcome)
+                if action == "again":
+                    break
+                if action == "open":
+                    _open_output_folder(outcome.paths)
+                    continue
+                if action == "copy":
+                    if _copy_paths_to_clipboard(outcome.paths):
+                        typer.secho("Output paths copied to clipboard.", fg=typer.colors.GREEN)
+                    else:
+                        typer.secho("Clipboard copy unavailable.", fg=typer.colors.YELLOW)
+                    continue
                 return
 
 
@@ -915,7 +1100,8 @@ def _run_version() -> None:
     cli_main.version()
 
 
-def main() -> None:
+def run_interactive() -> None:
+    cli_main.app.state.setdefault("interactive_show_events", False)
     typer.secho("Excel Manager — interactive mode", bold=True)
     actions: dict[str, Callable[[], None]] = {
         "combine": lambda: _run_with_retry("Combine", _prompt_combine_plan, _execute_combine),
@@ -925,8 +1111,9 @@ def main() -> None:
         "plan": _run_plan_execution,
         "diagnostics": _run_diagnostics,
         "version": _run_version,
+        "toggle_logs": _toggle_progress_logging,
     }
-    menu_items = [
+    base_menu = [
         MenuItem("combine", "Combine"),
         MenuItem("split", "Split"),
         MenuItem("preview", "Preview"),
@@ -936,7 +1123,16 @@ def main() -> None:
         MenuItem("version", "Version"),
     ]
     while True:
-        choice = prompt_menu("Excel Manager — interactive mode", menu_items, show_exit=True)
+        show_events = bool(cli_main.app.state.get("interactive_show_events", False))
+        toggle_label = "Show JSON progress log" if not show_events else "Hide JSON progress log"
+        menu_items = [*base_menu, MenuItem("toggle_logs", toggle_label)]
+        choice = prompt_menu(
+            "Select an action",
+            menu_items,
+            show_exit=True,
+            context="Excel Manager — interactive mode",
+            back_label="Refresh",
+        )
         if choice in {"back", "exit"}:
             if choice == "exit":
                 typer.echo("Goodbye!")
@@ -950,4 +1146,8 @@ def main() -> None:
             action()
         except BackRequested:
             continue
+
+
+def main() -> None:
+    run_interactive()
 
