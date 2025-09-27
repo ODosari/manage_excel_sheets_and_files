@@ -18,8 +18,3 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
-
-# Artifacts
-*.xlsx
-*.xlsm
-*.zip
