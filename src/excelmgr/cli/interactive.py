@@ -131,7 +131,15 @@ def _current_timestamp() -> str:
 
 def _find_data_root(reference: Path | None) -> Path:
     if reference is not None:
-        ref = reference.resolve()
+        try:
+            ref = reference.resolve(strict=False)
+        except TypeError:  # Python < 3.10 fallback
+            try:
+                ref = reference.resolve()
+            except FileNotFoundError:
+                ref = reference
+        except FileNotFoundError:
+            ref = reference
         search_candidates = []
         if ref.is_dir():
             search_candidates.append(ref)
@@ -260,7 +268,10 @@ def prompt_menu(
     show_exit: bool = False,
     context: str | None = None,
     back_label: str = "Back",
+    extra_items: Sequence[MenuItem] | None = None,
+    default_key: str | None = None,
 ) -> str:
+    quick_items = tuple(extra_items or ())
     while True:
         typer.echo()
         if context:
@@ -269,12 +280,22 @@ def prompt_menu(
         typer.echo(f"  0) {back_label}")
         for index, item in enumerate(items, start=1):
             typer.echo(f"  {index}) {item.label}")
+        if quick_items:
+            for quick in quick_items:
+                shortcut = quick.aliases[0] if quick.aliases else quick.key
+                shortcut_display = shortcut.upper() if len(shortcut) == 1 else shortcut
+                typer.echo(f"  [{shortcut_display}] {quick.label}")
         exit_index = None
         if show_exit:
             exit_index = len(items) + 1
             typer.echo(f"  {exit_index}) Exit")
-        raw = typer.prompt("Select an option").strip()
+        try:
+            raw = typer.prompt("Select an option").strip()
+        except typer.Abort:
+            return "exit" if show_exit else "back"
         if not raw:
+            if default_key is not None:
+                return default_key
             typer.secho("Please choose an option.", fg=typer.colors.YELLOW)
             continue
         simplified = _simplify(raw)
@@ -296,7 +317,7 @@ def prompt_menu(
             if show_exit and exit_index is not None and idx == exit_index:
                 return "exit"
         matches: list[str] = []
-        for item in items:
+        for item in (*items, *quick_items):
             candidates = [
                 _simplify(item.key),
                 _simplify(item.label),
@@ -358,6 +379,7 @@ def _prompt_password_inputs(*, context: str | None = None) -> tuple[str | None, 
         MenuItem("manual", "Type password manually"),
         MenuItem("env", "Read password from environment variable", aliases=("environment", "environment variable")),
         MenuItem("file", "Load password from file"),
+        MenuItem("done", "Done (keep current setting)", aliases=("done",)),
         MenuItem("map", "Use password map file"),
     ]
     while True:
@@ -365,11 +387,14 @@ def _prompt_password_inputs(*, context: str | None = None) -> tuple[str | None, 
             "Choose a password source",
             items,
             context=context,
+            default_key="none",
         )
         if choice == "back":
             raise BackRequested
         if choice == "none":
             typer.echo("Password: <none>")
+            return None, None
+        if choice == "done":
             return None, None
         if choice == "manual":
             password = _prompt_text("Password", allow_empty=False)
@@ -652,18 +677,29 @@ def _prompt_combine_plan() -> CombinePayload:
     )
     glob_pattern = _prompt_optional_text("Glob pattern (leave blank for none)")
     recursive = _prompt_confirm("Search recursively?", default=False)
-    password, password_map = _prompt_password_inputs(context="Combine ▸ Password")
-    sample = _sample_path(inputs)
-    include: Sequence[SheetSpec] | str
-    if sample is not None:
-        pw = _resolve_password(str(sample), password, password_map)
-        selection = pick_sheets(str(sample), password=pw, allow_multi=True)
-        if selection == "__ALL__":
-            include = "all"
-        else:
-            include = [SheetSpec(name) for name in selection]  # type: ignore[arg-type]
-    else:
-        include = "all"
+
+    manual_sheets: Sequence[SheetSpec] | str | None = None
+    while True:
+        selection = _prompt_optional_text("Sheets to include (comma separated, leave blank for all)")
+        if not selection:
+            break
+        simplified = selection.strip()
+        if not simplified:
+            break
+        if simplified.lower() == "all":
+            manual_sheets = "all"
+            break
+        try:
+            manual_sheets = cli_main._parse_sheet_list(simplified)
+            break
+        except ExcelMgrError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            continue
+
+    custom_output_path_raw = _prompt_optional_text("Output path (leave blank for automatic suggestion)")
+    sheet_name = _prompt_text("Output sheet name", default="Data")
+    add_source = _prompt_confirm("Add source column?", default=False)
+
     output_format_choice = prompt_menu(
         "Select output format",
         [
@@ -679,18 +715,45 @@ def _prompt_combine_plan() -> CombinePayload:
     if mode_choice == "multi_sheets" and output_format_choice != "xlsx":
         typer.secho("Multi-sheet mode requires Excel output format.", fg=typer.colors.RED)
         raise BackRequested
-    add_source = _prompt_confirm("Add source column?", default=False)
-    sheet_name = _prompt_text("Output sheet name", default="Data")
+
     dry_run = _prompt_confirm("Dry run (no files written)?", default=False)
+
+    password, password_map = _prompt_password_inputs(context="Combine ▸ Password")
+
+    sample = _sample_path(inputs)
+    include: Sequence[SheetSpec] | str
+    if manual_sheets is not None:
+        include = manual_sheets
+    elif sample is not None:
+        pw = _resolve_password(str(sample), password, password_map)
+        selection = pick_sheets(str(sample), password=pw, allow_multi=True)
+        if selection == "__ALL__":
+            include = "all"
+        else:
+            include = [SheetSpec(name) for name in selection]  # type: ignore[arg-type]
+    else:
+        include = "all"
+
     reference = sample or (Path(inputs[0]).expanduser() if inputs else None)
     out_dir = _operation_out_dir(reference, "combine")
     timestamp = _current_timestamp()
     suffix_map = {"xlsx": ".xlsx", "csv": ".csv", "parquet": ".parquet"}
     suffix = suffix_map[output_format_choice]
     base_name = "Combined" if (not sample or not sample.is_file() or len(inputs) > 1) else sample.stem
-    filename = _compose_filename(base=base_name, src=sample, sheet=None, extra=None, timestamp=timestamp, suffix=suffix)
-    output_path = out_dir / filename
-    _preview_output_destination(out_dir, filename)
+    filename = _compose_filename(
+        base=base_name,
+        src=sample,
+        sheet=None,
+        extra=None,
+        timestamp=timestamp,
+        suffix=suffix,
+    )
+    if custom_output_path_raw:
+        output_path = Path(custom_output_path_raw).expanduser()
+    else:
+        output_path = out_dir / filename
+        _preview_output_destination(out_dir, filename)
+
     plan = CombinePlan(
         inputs=inputs,
         glob=glob_pattern,
@@ -1191,13 +1254,16 @@ def run_interactive() -> None:
     while True:
         show_events = bool(cli_main.app.state.get("interactive_show_events", False))
         toggle_label = "Show JSON progress log" if not show_events else "Hide JSON progress log"
-        menu_items = [*base_menu, MenuItem("toggle_logs", toggle_label)]
+        toggle_item = MenuItem("toggle_logs", toggle_label, aliases=("t", "toggle", "logs"))
+        menu_items = list(base_menu)
+        typer.secho("Main menu", bold=True)
         choice = prompt_menu(
             "Select an action",
             menu_items,
             show_exit=True,
             context="Excel Manager — interactive mode",
             back_label="Refresh",
+            extra_items=(toggle_item,),
         )
         if choice in {"back", "exit"}:
             if choice == "exit":
