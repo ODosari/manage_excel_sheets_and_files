@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+import io
 
 import pandas as pd
 
@@ -11,10 +12,13 @@ from excelmgr.core.errors import ExcelMgrError
 
 
 class _CsvSink:
-    def __init__(self, handle) -> None:
+    def __init__(self, handle, add_bom: bool) -> None:
         self._handle = handle
         self._header_written = False
         self._columns: list[str] | None = None
+        self._add_bom = add_bom
+        if self._add_bom:
+            self._handle.write("\ufeff")
 
     def append(self, df: pd.DataFrame) -> None:
         if self._columns is None:
@@ -64,13 +68,17 @@ class _ParquetSink:
 
 
 @contextmanager
-def csv_sink(out_path: str) -> Iterator[_CsvSink]:
-    with atomic_write(out_path, "w", tmp_dir=settings.temp_dir) as (fh, _tmp):
-        sink = _CsvSink(fh)
+def csv_sink(out_path: str, *, add_bom: bool = False) -> Iterator[_CsvSink]:
+    with atomic_write(out_path, "wb", tmp_dir=settings.temp_dir) as (fh, _tmp):
+        text_handle = io.TextIOWrapper(fh, encoding="utf-8", newline="")
+        sink = _CsvSink(text_handle, add_bom)
         try:
             yield sink
         finally:
-            sink.finalize()
+            try:
+                sink.finalize()
+            finally:
+                text_handle.close()
 
 
 @contextmanager

@@ -66,6 +66,11 @@ Choose log format and destination:
 excelmgr --log text --log-level INFO --log-file excelmgr.log combine ./data --out combined.xlsx
 ```
 
+## Encoding
+- All text I/O defaults to UTF-8. Readers transparently accept UTF-8 with or without BOMs so headers such as `Müşteri Adı` or `年` stay intact.
+- Interactive mode preserves Unicode in filenames, sheet names, column headers, previews, and JSON logs (no `\uXXXX` escaping).
+- When exporting CSV/TSV, files are written as UTF-8 without a BOM by default. Enable the optional **“Add UTF-8 BOM for compatibility?”** toggle in the format menu if a legacy consumer requires it.
+
 ## Exit codes
 - `0` success
 - `2` known error (e.g., sheet not found, decryption)

@@ -146,7 +146,7 @@ def split(
             if plan.output_format == "xlsx":
                 writer.write_single_sheet(g, str(out_path), sheet_name=plan.output_sheet_name)
             elif plan.output_format == "csv":
-                with csv_sink(str(out_path)) as sink:
+                with csv_sink(str(out_path), add_bom=plan.csv_add_bom) as sink:
                     sink.append(g)
             elif plan.output_format == "parquet":
                 with parquet_sink(str(out_path)) as sink:

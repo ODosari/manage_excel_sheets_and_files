@@ -25,6 +25,7 @@ from excelmgr.core.password_maps import load_password_map
 from excelmgr.core.preview import preview
 from excelmgr.core.progress import ProgressHook
 from excelmgr.core.split import split
+from excelmgr.util.text import read_text
 from excelmgr.ports.readers import WorkbookReader
 from excelmgr.ports.writers import CloudObjectWriter, TableWriter, WorkbookWriter
 
@@ -173,6 +174,7 @@ def _build_combine_plan(entry: Mapping, base_dir: Path) -> CombinePlan:
         password=entry.get("password"),
         password_map=password_map,
         output_format=str(entry.get("output_format", "xlsx")),
+        csv_add_bom=bool(entry.get("csv_add_bom", False)),
         dry_run=bool(entry.get("dry_run", False)),
         destination=destination,
     )
@@ -204,6 +206,7 @@ def _build_split_plan(entry: Mapping, base_dir: Path) -> SplitPlan:
         password=entry.get("password"),
         password_map=password_map,
         output_format=str(entry.get("output_format", "xlsx")),
+        csv_add_bom=bool(entry.get("csv_add_bom", False)),
         dry_run=bool(entry.get("dry_run", False)),
         destination=destination,
     )
@@ -284,9 +287,9 @@ def load_plan_file(path: str) -> list[PlanOperation]:
             import yaml
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise ExcelMgrError("YAML plan support requires the 'PyYAML' package.") from exc
-        data = yaml.safe_load(plan_path.read_text(encoding="utf-8"))
+        data = yaml.safe_load(read_text(plan_path))
     else:
-        data = json.loads(plan_path.read_text(encoding="utf-8"))
+        data = json.loads(read_text(plan_path))
 
     if data is None:
         return []

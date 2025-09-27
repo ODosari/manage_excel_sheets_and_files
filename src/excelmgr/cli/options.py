@@ -4,6 +4,7 @@ import typer
 
 from excelmgr.core.errors import ExcelMgrError
 from excelmgr.core.password_maps import load_password_map
+from excelmgr.util.text import read_text
 
 
 def read_secret(password: str | None, password_env: str | None, password_file: str | None) -> str | None:
@@ -13,8 +14,7 @@ def read_secret(password: str | None, password_env: str | None, password_file: s
         return os.environ.get(password_env)
     if password_file:
         try:
-            with open(password_file, encoding="utf-8") as f:
-                return f.read().strip()
+            return read_text(password_file).strip()
         except FileNotFoundError:
             raise typer.BadParameter(f"Password file not found: {password_file}") from None
     return None

@@ -101,7 +101,7 @@ def combine(
             if plan.output_format == "xlsx":
                 sink_cm = writer.stream_single_sheet(plan.output_path, sheet_name=plan.output_sheet_name)
             elif plan.output_format == "csv":
-                sink_cm = csv_sink(plan.output_path)
+                sink_cm = csv_sink(plan.output_path, add_bom=plan.csv_add_bom)
             elif plan.output_format == "parquet":
                 sink_cm = parquet_sink(plan.output_path)
             else:  # pragma: no cover - guarded by CLI validation
