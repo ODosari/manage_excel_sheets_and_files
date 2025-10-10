@@ -52,3 +52,53 @@ def test_interactive_combine_flow(monkeypatch):
     assert captured["plan"].inputs == ["file.xlsx"]
     assert captured["plan"].mode == "one_sheet"
     assert captured["plan"].dry_run is True
+
+
+def test_interactive_split_column_picker(monkeypatch):
+    captured = {}
+
+    class FakeReader:
+        def sheet_names(self, path: str, password: str | None = None):
+            return ["Data"]
+
+        def sheet_columns(self, path: str, sheet: str | int, password: str | None = None):
+            return ["ID", "Category", "Value"]
+
+    def fake_writer():
+        return "writer"
+
+    def fake_split(plan, reader, writer, progress_hooks):  # pragma: no cover - invoked via interactive menu
+        captured["plan"] = plan
+        return {
+            "count": 0,
+            "outputs": [],
+            "by": "Category",
+            "to": plan.to,
+            "dry_run": plan.dry_run,
+        }
+
+    monkeypatch.setattr("excelmgr.cli.interactive.PandasReader", lambda: FakeReader())
+    monkeypatch.setattr("excelmgr.cli.interactive.PandasWriter", fake_writer)
+    monkeypatch.setattr("excelmgr.cli.interactive.split_command", fake_split)
+
+    runner = CliRunner()
+    input_steps = [
+        "2",  # main menu -> split
+        "workbook.xlsx",  # input workbook
+        "",  # password default (none)
+        "1",  # sheet selection
+        "2",  # column picker -> Category
+        "1",  # destination -> files
+        "",  # include missing default (no)
+        "1",  # format -> xlsx
+        "y",  # dry run
+        "2",  # What next? -> back to main menu
+        "8",  # exit
+    ]
+    result = runner.invoke(app, [], input="\n".join(input_steps) + "\n")
+
+    assert result.exit_code == 0
+    assert "Split workflow" in result.output
+    assert "Columns in Data" in result.output
+    assert "  2) Category" in result.output
+    assert captured["plan"].by_column == "name:Category"

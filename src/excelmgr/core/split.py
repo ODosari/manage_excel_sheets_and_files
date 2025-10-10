@@ -47,6 +47,8 @@ def split(
     pw = resolve_password(plan.input_file, plan.password, plan.password_map)
     df = reader.read_sheet(plan.input_file, sheet_ref, pw)
     col = plan.by_column
+    use_label = False
+    name_lookup: str | None = None
     if isinstance(col, str):
         cleaned = col.strip()
         if cleaned.lower().startswith("index:"):
@@ -57,23 +59,41 @@ def split(
                 )
             col = int(rest.strip())
         elif cleaned.lower().startswith("name:"):
-            _, _, rest = cleaned.partition(":")
-            col = rest.strip() or col
+            _, _, rest = col.partition(":")
+            candidate = rest
+            trimmed = candidate.strip()
+            match = None
+            for column_label in df.columns:
+                column_str = str(column_label)
+                if column_str == candidate or column_str == trimmed:
+                    match = column_label
+                    break
+            if match is None:
+                lookup = trimmed or candidate
+                raise ExcelMgrError(
+                    f"Column '{lookup}' was not found in sheet {sheet_ref!r}."
+                )
+            col = match
+            use_label = True
+            name_lookup = str(match)
     try:
-        if isinstance(col, int):
+        if isinstance(col, int) and not use_label:
             key_series = df.iloc[:, col]
-            key_name = df.columns[col]
+            key_label = df.columns[col]
         else:
             key_series = df[col]
-            key_name = col
+            key_label = col
     except IndexError as exc:
         raise ExcelMgrError(
             f"Column index {col} is out of range for sheet {sheet_ref!r}."
         ) from exc
     except KeyError as exc:
+        lookup = name_lookup or col
         raise ExcelMgrError(
-            f"Column '{col}' was not found in sheet {sheet_ref!r}."
+            f"Column '{lookup}' was not found in sheet {sheet_ref!r}."
         ) from exc
+
+    key_name = str(key_label)
 
     if not plan.include_nan:
         parts = df[~key_series.isna()].groupby(key_series, dropna=True)

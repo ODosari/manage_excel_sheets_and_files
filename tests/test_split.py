@@ -223,6 +223,29 @@ def test_split_database_destination_requires_writer(tmp_path: Path) -> None:
         split(plan, DummyReader(), DummyWriter())
 
 
+def test_split_name_spec_matches_numeric_column(tmp_path: Path) -> None:
+    class NumericReader:
+        def read_sheet(self, path: str, sheet: str | int, password: str | None = None) -> pd.DataFrame:
+            return pd.DataFrame({
+                1: ["A", "B"],
+                2: ["X", "Y"],
+            })
+
+    plan = SplitPlan(
+        input_file="ignored.xlsx",
+        by_column="name:1",
+        to="files",
+        output_dir=str(tmp_path),
+        output_format="csv",
+        dry_run=True,
+    )
+
+    result = split(plan, NumericReader(), DummyWriter())
+
+    assert result["count"] == 2
+    assert result["by"] == "1"
+
+
 def test_split_database_destination_requires_files_mode(tmp_path: Path) -> None:
     destination = DatabaseDestination(
         uri=str(tmp_path / "parts.sqlite"),
