@@ -366,6 +366,7 @@ def execute_plan(
                 op.plan,  # type: ignore[arg-type]
                 reader,
                 writer,
+                database_writer=db_writer,
                 cloud_writer=cloud_writer,
                 progress_hooks=hooks,
             )

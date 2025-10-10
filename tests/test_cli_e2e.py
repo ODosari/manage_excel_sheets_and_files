@@ -83,6 +83,31 @@ def test_cli_combine_to_csv_format():
         assert payload["format"] == "csv"
 
 
+def test_cli_combine_csv_add_bom_flag():
+    with runner.isolated_filesystem():
+        df = pd.DataFrame({"Customer": ["A"], "Amount": [10]})
+        df.to_excel("north.xlsx", index=False)
+
+        result = runner.invoke(
+            app,
+            [
+                "combine",
+                "north.xlsx",
+                "--out",
+                "combined.csv",
+                "--format",
+                "csv",
+                "--csv-add-bom",
+            ],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.stdout
+        out_file = Path("combined.csv")
+        assert out_file.exists()
+        assert out_file.read_bytes().startswith("\ufeff".encode("utf-8"))
+
+
 def test_cli_combine_dry_run_skips_output():
     with runner.isolated_filesystem():
         df1 = pd.DataFrame({"Customer": ["A"]})
@@ -105,6 +130,26 @@ def test_cli_combine_dry_run_skips_output():
         assert not Path("combined.xlsx").exists()
         payload = _read_json(result.stdout)
         assert payload["dry_run"] is True
+
+
+def test_cli_accepts_lowercase_log_level():
+    with runner.isolated_filesystem():
+        df = pd.DataFrame({"Customer": ["A"]})
+        df.to_excel("north.xlsx", index=False)
+
+        result = runner.invoke(
+            app,
+            [
+                "--log-level",
+                "info",
+                "combine",
+                "north.xlsx",
+                "--dry-run",
+            ],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.stdout
 
 
 def test_cli_split_to_files_creates_directory_structure():
@@ -180,6 +225,35 @@ def test_cli_split_to_csv_format():
             "B.csv",
         ]
         assert pd.read_csv(a_file)["Category"].tolist() == ["A"]
+
+
+def test_cli_split_csv_add_bom_flag():
+    with runner.isolated_filesystem():
+        df = pd.DataFrame({"Category": ["A"], "Value": [1]})
+        df.to_excel("source.xlsx", index=False)
+
+        result = runner.invoke(
+            app,
+            [
+                "split",
+                "source.xlsx",
+                "--by",
+                "Category",
+                "--to",
+                "files",
+                "--out",
+                "exports",
+                "--format",
+                "csv",
+                "--csv-add-bom",
+            ],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.stdout
+        out_file = Path("exports/A.csv")
+        assert out_file.exists()
+        assert out_file.read_bytes().startswith("\ufeff".encode("utf-8"))
 
 
 def test_cli_split_to_sheets_derives_output_name():

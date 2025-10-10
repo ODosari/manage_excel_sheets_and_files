@@ -24,6 +24,16 @@ class PandasReader:
         with pd.ExcelFile(handle, engine=self.engine) as xf:
             return list(xf.sheet_names)
 
+    def sheet_columns(self, path: str, sheet: str | int, password: str | None = None) -> list[object]:
+        """Return the column labels for a sheet without loading all rows."""
+
+        handle = path
+        if password:
+            handle = unlock_to_stream(path, password)
+        with pd.ExcelFile(handle, engine=self.engine) as xf:
+            frame = xf.parse(sheet_name=sheet, nrows=0)
+        return list(frame.columns)
+
     def read_sheet(self, path: str, sheet: str | int, password: str | None = None) -> pd.DataFrame:
         handle = path
         if password:

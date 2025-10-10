@@ -518,6 +518,154 @@ def pick_sheets(path: str, *, password: str | None, allow_multi: bool, allow_all
         typer.secho("Invalid selection. Try again.", fg=typer.colors.RED)
 
 
+@dataclass
+class ColumnOption:
+    index: int
+    header: object
+    display: str
+    token: str
+    normalized_header: str
+    simplified_display: str
+
+
+def _list_sheet_columns(path: str, sheet: str | int, password: str | None) -> list[object]:
+    reader = PandasReader()
+    try:
+        return reader.sheet_columns(path, sheet, password)
+    except AttributeError:  # pragma: no cover - compatibility with older readers
+        frame = reader.read_sheet(path, sheet, password)
+        return list(frame.columns)
+
+
+def _describe_column(column: object, position: int) -> ColumnOption:
+    raw_text = "" if column is None else str(column)
+    is_missing = False
+    if column is None:
+        is_missing = True
+    else:
+        try:
+            is_missing = bool(column != column)  # NaN-safe comparison
+        except Exception:  # pragma: no cover - defensive guard
+            is_missing = False
+    if not is_missing and not raw_text.strip():
+        is_missing = True
+
+    if is_missing:
+        display = f"Column {position} (no header)"
+        token = f"index:{position - 1}"
+        normalized = ""
+        simplified = _simplify(display)
+    else:
+        display = raw_text.strip() or raw_text
+        token = f"name:{raw_text}"
+        normalized = _normalize_token(raw_text)
+        simplified = _simplify(display)
+
+    return ColumnOption(
+        index=position,
+        header=column,
+        display=display,
+        token=token,
+        normalized_header=normalized,
+        simplified_display=simplified,
+    )
+
+
+def pick_column(
+    path: str,
+    *,
+    sheet: str | int,
+    password: str | None,
+    sheet_display: str,
+    prompt: str,
+) -> str:
+    columns = _list_sheet_columns(path, sheet, password)
+    if not columns:
+        raise ExcelMgrError("No columns found in the selected sheet.")
+    options = [_describe_column(col, pos) for pos, col in enumerate(columns, start=1)]
+
+    while True:
+        typer.echo()
+        typer.secho(f"Columns in {sheet_display}", bold=True)
+        typer.echo("  0) Back")
+        for option in options:
+            typer.echo(f"  {option.index}) {option.display}")
+
+        raw = typer.prompt(prompt).strip()
+        if not raw:
+            typer.secho("Please choose a column.", fg=typer.colors.YELLOW)
+            continue
+
+        simplified = _simplify(raw)
+        normalized = _normalize_token(raw)
+
+        if simplified in BACK_KEYWORDS_NORMALIZED or simplified == "0":
+            raise BackRequested
+
+        if simplified.startswith(_simplify("index:")):
+            _, _, rest = raw.partition(":")
+            try:
+                idx = _parse_numeric_token(_normalize_token(rest))
+            except ValueError:
+                typer.secho("Column index must be numeric.", fg=typer.colors.RED)
+                continue
+            if not (0 <= idx < len(options)):
+                typer.secho("Index is out of range.", fg=typer.colors.RED)
+                continue
+            selected = options[idx]
+            typer.echo(f"Selected column: {selected.display}")
+            return f"index:{idx}"
+
+        if simplified.startswith(_simplify("name:")):
+            _, _, rest = raw.partition(":")
+            normalized_rest = _normalize_token(rest)
+            candidates = [
+                option
+                for option in options
+                if option.normalized_header and option.normalized_header == normalized_rest
+            ]
+            if len(candidates) == 1:
+                typer.echo(f"Selected column: {candidates[0].display}")
+                return candidates[0].token
+            typer.secho("Column name not found.", fg=typer.colors.RED)
+            continue
+
+        try:
+            idx = _parse_numeric_token(normalized)
+        except ValueError:
+            idx = None
+        if idx is not None:
+            if idx == 0:
+                raise BackRequested
+            if 1 <= idx <= len(options):
+                selected = options[idx - 1]
+                typer.echo(f"Selected column: {selected.display}")
+                return selected.token
+            typer.secho("Invalid column number.", fg=typer.colors.RED)
+            continue
+
+        exact_matches = [
+            option
+            for option in options
+            if option.normalized_header
+            and option.normalized_header == normalized
+        ]
+        if len(exact_matches) == 1:
+            typer.echo(f"Selected column: {exact_matches[0].display}")
+            return exact_matches[0].token
+
+        prefix_matches = [
+            option
+            for option in options
+            if option.simplified_display.startswith(simplified)
+        ]
+        if len(prefix_matches) == 1:
+            typer.echo(f"Selected column: {prefix_matches[0].display}")
+            return prefix_matches[0].token
+
+        typer.secho("Invalid selection. Try again.", fg=typer.colors.RED)
+
+
 class VisualProgress:
     stages = ["Reading", "Planning", "Executing", "Writing"]
 
@@ -780,7 +928,13 @@ def _prompt_split_plan() -> SplitPayload:
     selection = pick_sheets(input_file, password=pw, allow_multi=False, allow_all=False)
     sheet_name = selection[0]
     sheet_spec = SheetSpec(sheet_name)
-    column = _prompt_text("Column to split by")
+    column = pick_column(
+        input_file,
+        sheet=sheet_spec.name_or_index,
+        password=pw,
+        sheet_display=sheet_name,
+        prompt="Select a column to split by (enter number or name)",
+    )
     destination_choice = prompt_menu(
         "Split destination",
         [
