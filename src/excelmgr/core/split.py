@@ -10,7 +10,7 @@ from excelmgr.core.passwords import resolve_password
 from excelmgr.core.progress import ProgressHook, emit_progress
 from excelmgr.core.sinks import csv_sink, parquet_sink
 from excelmgr.ports.readers import WorkbookReader
-from excelmgr.ports.writers import CloudObjectWriter, WorkbookWriter
+from excelmgr.ports.writers import CloudObjectWriter, TableWriter, WorkbookWriter
 
 
 def _render_cloud_key(template: str, unique_name: str) -> str:
@@ -26,6 +26,7 @@ def split(
     reader: WorkbookReader,
     writer: WorkbookWriter,
     *,
+    database_writer: TableWriter | None = None,
     cloud_writer: CloudObjectWriter | None = None,
     progress_hooks: Iterable[ProgressHook] | None = None,
 ) -> dict:
@@ -46,6 +47,8 @@ def split(
     pw = resolve_password(plan.input_file, plan.password, plan.password_map)
     df = reader.read_sheet(plan.input_file, sheet_ref, pw)
     col = plan.by_column
+    use_label = False
+    name_lookup: str | None = None
     if isinstance(col, str):
         cleaned = col.strip()
         if cleaned.lower().startswith("index:"):
@@ -56,23 +59,41 @@ def split(
                 )
             col = int(rest.strip())
         elif cleaned.lower().startswith("name:"):
-            _, _, rest = cleaned.partition(":")
-            col = rest.strip() or col
+            _, _, rest = col.partition(":")
+            candidate = rest
+            trimmed = candidate.strip()
+            match = None
+            for column_label in df.columns:
+                column_str = str(column_label)
+                if column_str == candidate or column_str == trimmed:
+                    match = column_label
+                    break
+            if match is None:
+                lookup = trimmed or candidate
+                raise ExcelMgrError(
+                    f"Column '{lookup}' was not found in sheet {sheet_ref!r}."
+                )
+            col = match
+            use_label = True
+            name_lookup = str(match)
     try:
-        if isinstance(col, int):
+        if isinstance(col, int) and not use_label:
             key_series = df.iloc[:, col]
-            key_name = df.columns[col]
+            key_label = df.columns[col]
         else:
             key_series = df[col]
-            key_name = col
+            key_label = col
     except IndexError as exc:
         raise ExcelMgrError(
             f"Column index {col} is out of range for sheet {sheet_ref!r}."
         ) from exc
     except KeyError as exc:
+        lookup = name_lookup or col
         raise ExcelMgrError(
-            f"Column '{col}' was not found in sheet {sheet_ref!r}."
+            f"Column '{lookup}' was not found in sheet {sheet_ref!r}."
         ) from exc
+
+    key_name = str(key_label)
 
     if not plan.include_nan:
         parts = df[~key_series.isna()].groupby(key_series, dropna=True)
@@ -80,8 +101,11 @@ def split(
         parts = df.groupby(key_series, dropna=False)
 
     destination = plan.destination
+    database_state: dict[str, object] | None = None
     if isinstance(destination, DatabaseDestination):
-        raise ExcelMgrError("Split plan does not support database destinations yet.")
+        if plan.to != "files":
+            raise ExcelMgrError("Database destinations are only supported when splitting to files.")
+        database_state = {"destination": destination, "first": True}
 
     if plan.to == "sheets":
         mapping: dict[str, pd.DataFrame] = {}
@@ -151,6 +175,21 @@ def split(
             elif plan.output_format == "parquet":
                 with parquet_sink(str(out_path)) as sink:
                     sink.append(g)
+            if database_state:
+                destination = database_state["destination"]  # type: ignore[assignment]
+                if database_writer is None:
+                    raise ExcelMgrError(
+                        "Database destination requested but no database writer was provided."
+                    )
+                mode = destination.mode if database_state["first"] else "append"
+                database_writer.write_dataframe(
+                    g,
+                    destination.table,
+                    mode=mode,
+                    options=destination.options,
+                    uri=destination.uri,
+                )
+                database_state["first"] = False
             if isinstance(destination, CloudDestination):
                 if cloud_writer is None:
                     raise ExcelMgrError(
@@ -176,6 +215,12 @@ def split(
             "kind": "cloud",
             "key_template": destination.key,
             "root": destination.root,
+        }
+    elif isinstance(destination, DatabaseDestination):
+        result["destination"] = {
+            "kind": "database",
+            "uri": destination.uri,
+            "table": destination.table,
         }
     if cloud_records:
         result["uploaded"] = cloud_records

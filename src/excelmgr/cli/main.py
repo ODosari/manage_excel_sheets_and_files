@@ -11,7 +11,7 @@ from typer.core import TyperOption
 
 from excelmgr.adapters.json_logger import JsonLogger
 from excelmgr.adapters.pandas_io import PandasReader, PandasWriter
-from excelmgr.config.settings import settings
+from excelmgr.config.settings import LOG_LEVEL_CHOICES, normalize_log_level, settings
 from excelmgr.core.combine import combine as combine_command
 from excelmgr.core.delete_cols import delete_columns as delete_columns_command
 from excelmgr.core.errors import ExcelMgrError
@@ -111,9 +111,10 @@ def main(
 ):
     if log_format not in {"json", "text"}:
         raise typer.BadParameter("--log must be either 'json' or 'text'.")
-    if log_level not in {"DEBUG", "INFO", "WARN", "ERROR"}:
+    normalized_level = normalize_log_level(log_level)
+    if normalized_level not in LOG_LEVEL_CHOICES:
         raise typer.BadParameter("--log-level must be DEBUG, INFO, WARN, or ERROR.")
-    app.state = {"logger": _make_logger(log_format, log_level, log_file)}
+    app.state = {"logger": _make_logger(log_format, normalized_level, log_file)}
 
     if ctx.invoked_subcommand is None and not ctx.resilient_parsing:
         from .interactive import main as interactive_main
@@ -137,6 +138,13 @@ def combine(
     password_file: Annotated[str | None, typer.Option("--password-file")] = None,
     password_map: Annotated[str | None, typer.Option("--password-map")] = None,
     out_format: Annotated[str, typer.Option("--format")] = "xlsx",
+    csv_add_bom: Annotated[
+        bool,
+        typer.Option(
+            "--csv-add-bom/--no-csv-add-bom",
+            help="Add a UTF-8 BOM when writing CSV output.",
+        ),
+    ] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ):
     logger = app.state["logger"]  # type: ignore[attr-defined]
@@ -161,6 +169,8 @@ def combine(
             raise ExcelMgrError("--format must be xlsx, csv, or parquet.")
         if mode_map[mode] == "multi_sheets" and format_normalized != "xlsx":
             raise ExcelMgrError("Multi-sheet combine output must use Excel format.")
+        if format_normalized != "csv" and csv_add_bom:
+            raise ExcelMgrError("--csv-add-bom can only be used when --format is csv.")
 
         plan_obj = CombinePlan(
             inputs=inputs,
@@ -174,6 +184,7 @@ def combine(
             password=pw,
             password_map=pw_map,
             output_format=format_normalized,  # type: ignore[arg-type]
+            csv_add_bom=csv_add_bom,
             dry_run=dry_run,
         )
         hook = _make_progress_hook(logger)
@@ -210,6 +221,13 @@ def split(
     password_file: Annotated[str | None, typer.Option("--password-file")] = None,
     password_map: Annotated[str | None, typer.Option("--password-map")] = None,
     out_format: Annotated[str, typer.Option("--format")] = "xlsx",
+    csv_add_bom: Annotated[
+        bool,
+        typer.Option(
+            "--csv-add-bom/--no-csv-add-bom",
+            help="Add a UTF-8 BOM when writing CSV files.",
+        ),
+    ] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ):
     logger = app.state["logger"]  # type: ignore[attr-defined]
@@ -230,6 +248,8 @@ def split(
             raise ExcelMgrError("--format must be xlsx, csv, or parquet.")
         if to == "sheets" and format_normalized != "xlsx":
             raise ExcelMgrError("Sheet mode output must be Excel format.")
+        if format_normalized != "csv" and csv_add_bom:
+            raise ExcelMgrError("--csv-add-bom can only be used when --format is csv.")
 
         plan_obj = SplitPlan(
             input_file=input_file,
@@ -243,6 +263,7 @@ def split(
             password=pw,
             password_map=pw_map,
             output_format=format_normalized,  # type: ignore[arg-type]
+            csv_add_bom=csv_add_bom,
             dry_run=dry_run,
         )
         hook = _make_progress_hook(logger)
