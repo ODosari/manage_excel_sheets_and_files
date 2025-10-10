@@ -10,7 +10,7 @@ from excelmgr.core.passwords import resolve_password
 from excelmgr.core.progress import ProgressHook, emit_progress
 from excelmgr.core.sinks import csv_sink, parquet_sink
 from excelmgr.ports.readers import WorkbookReader
-from excelmgr.ports.writers import CloudObjectWriter, WorkbookWriter
+from excelmgr.ports.writers import CloudObjectWriter, TableWriter, WorkbookWriter
 
 
 def _render_cloud_key(template: str, unique_name: str) -> str:
@@ -26,6 +26,7 @@ def split(
     reader: WorkbookReader,
     writer: WorkbookWriter,
     *,
+    database_writer: TableWriter | None = None,
     cloud_writer: CloudObjectWriter | None = None,
     progress_hooks: Iterable[ProgressHook] | None = None,
 ) -> dict:
@@ -80,8 +81,11 @@ def split(
         parts = df.groupby(key_series, dropna=False)
 
     destination = plan.destination
+    database_state: dict[str, object] | None = None
     if isinstance(destination, DatabaseDestination):
-        raise ExcelMgrError("Split plan does not support database destinations yet.")
+        if plan.to != "files":
+            raise ExcelMgrError("Database destinations are only supported when splitting to files.")
+        database_state = {"destination": destination, "first": True}
 
     if plan.to == "sheets":
         mapping: dict[str, pd.DataFrame] = {}
@@ -151,6 +155,21 @@ def split(
             elif plan.output_format == "parquet":
                 with parquet_sink(str(out_path)) as sink:
                     sink.append(g)
+            if database_state:
+                destination = database_state["destination"]  # type: ignore[assignment]
+                if database_writer is None:
+                    raise ExcelMgrError(
+                        "Database destination requested but no database writer was provided."
+                    )
+                mode = destination.mode if database_state["first"] else "append"
+                database_writer.write_dataframe(
+                    g,
+                    destination.table,
+                    mode=mode,
+                    options=destination.options,
+                    uri=destination.uri,
+                )
+                database_state["first"] = False
             if isinstance(destination, CloudDestination):
                 if cloud_writer is None:
                     raise ExcelMgrError(
@@ -176,6 +195,12 @@ def split(
             "kind": "cloud",
             "key_template": destination.key,
             "root": destination.root,
+        }
+    elif isinstance(destination, DatabaseDestination):
+        result["destination"] = {
+            "kind": "database",
+            "uri": destination.uri,
+            "table": destination.table,
         }
     if cloud_records:
         result["uploaded"] = cloud_records
