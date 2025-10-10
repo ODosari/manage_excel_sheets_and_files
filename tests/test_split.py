@@ -1,10 +1,11 @@
+from collections.abc import Mapping
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from excelmgr.core.errors import ExcelMgrError
-from excelmgr.core.models import SplitPlan
+from excelmgr.core.models import DatabaseDestination, SplitPlan
 from excelmgr.core.split import split
 
 
@@ -139,6 +140,101 @@ def test_split_rejects_output_filename_for_files(tmp_path: Path) -> None:
         output_dir=str(tmp_path),
         output_filename="not-allowed.xlsx",
         output_format="xlsx",
+    )
+
+    with pytest.raises(ExcelMgrError):
+        split(plan, DummyReader(), DummyWriter())
+
+
+def test_split_writes_to_database_destination(tmp_path: Path) -> None:
+    options = {"chunksize": 1000}
+    destination = DatabaseDestination(
+        uri=str(tmp_path / "parts.sqlite"),
+        table="parts",
+        mode="replace",
+        options=options,
+    )
+    plan = SplitPlan(
+        input_file="ignored.xlsx",
+        by_column="Category",
+        to="files",
+        output_dir=str(tmp_path),
+        output_format="csv",
+        destination=destination,
+    )
+
+    class RecordingWriter:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def write_dataframe(
+            self,
+            df: pd.DataFrame,
+            table: str,
+            *,
+            mode: str,
+            options: Mapping[str, object] | None = None,
+            uri: str,
+        ) -> None:
+            self.calls.append(
+                {
+                    "df": df.copy(),
+                    "table": table,
+                    "mode": mode,
+                    "options": dict(options or {}),
+                    "uri": uri,
+                }
+            )
+
+    writer = RecordingWriter()
+    result = split(
+        plan,
+        DummyReader(),
+        DummyWriter(),
+        database_writer=writer,  # type: ignore[arg-type]
+    )
+
+    assert [call["mode"] for call in writer.calls] == ["replace", "append"]
+    assert all(call["table"] == "parts" for call in writer.calls)
+    assert all(call["uri"].endswith("parts.sqlite") for call in writer.calls)
+    assert writer.calls[0]["options"] == options
+    assert result["destination"] == {
+        "kind": "database",
+        "uri": destination.uri,
+        "table": destination.table,
+    }
+
+
+def test_split_database_destination_requires_writer(tmp_path: Path) -> None:
+    destination = DatabaseDestination(
+        uri=str(tmp_path / "parts.sqlite"),
+        table="parts",
+    )
+    plan = SplitPlan(
+        input_file="ignored.xlsx",
+        by_column="Category",
+        to="files",
+        output_dir=str(tmp_path),
+        output_format="csv",
+        destination=destination,
+    )
+
+    with pytest.raises(ExcelMgrError):
+        split(plan, DummyReader(), DummyWriter())
+
+
+def test_split_database_destination_requires_files_mode(tmp_path: Path) -> None:
+    destination = DatabaseDestination(
+        uri=str(tmp_path / "parts.sqlite"),
+        table="parts",
+    )
+    plan = SplitPlan(
+        input_file="ignored.xlsx",
+        by_column="Category",
+        to="sheets",
+        output_dir=str(tmp_path),
+        output_format="xlsx",
+        destination=destination,
     )
 
     with pytest.raises(ExcelMgrError):
