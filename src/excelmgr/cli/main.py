@@ -6,6 +6,7 @@ import sys
 from typing import Annotated, Literal
 
 import typer
+from rich import print
 from typer.core import TyperOption
 
 from excelmgr.adapters.json_logger import JsonLogger
@@ -24,11 +25,11 @@ from excelmgr.core.split import split as split_command
 def _patch_typer_option() -> None:
     original = TyperOption.make_metavar
 
-    def _make_metavar(self, ctx=None, orig=original):
+    def _make_metavar(self, ctx=None):
         if ctx is None:
             name = self.name or "OPTION"
-            return (self.metavar or name.upper())
-        return orig(self, ctx)
+            return self.metavar or name.upper()
+        return original(self, ctx)
 
     if original.__code__.co_argcount == 2:
         TyperOption.make_metavar = _make_metavar  # type: ignore[assignment]
@@ -38,12 +39,6 @@ _patch_typer_option()
 
 
 app = typer.Typer(invoke_without_command=True, add_completion=False, rich_markup_mode=None)
-
-
-def _echo_json(payload: object) -> None:
-    """Emit a JSON payload without ANSI styling so tests can parse it."""
-
-    typer.echo(json.dumps(payload, indent=2, ensure_ascii=False), color=False)
 
 
 def _make_logger(fmt: str, level: str, file: str | None):
@@ -144,7 +139,7 @@ def combine(
     out_format: Annotated[str, typer.Option("--format")] = "xlsx",
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ):
-    logger = app.state["logger"]
+    logger = app.state["logger"]  # type: ignore[attr-defined]
     from .options import read_password_map, read_secret
 
     try:
@@ -167,11 +162,11 @@ def combine(
         if mode_map[mode] == "multi_sheets" and format_normalized != "xlsx":
             raise ExcelMgrError("Multi-sheet combine output must use Excel format.")
 
-        plan = CombinePlan(
+        plan_obj = CombinePlan(
             inputs=inputs,
             glob=glob,
             recursive=recursive,
-            mode=mode_map[mode],
+            mode=mode_map[mode],  # type: ignore[arg-type]
             include_sheets=include,
             output_path=out,
             output_sheet_name=sheet_name,
@@ -183,13 +178,13 @@ def combine(
         )
         hook = _make_progress_hook(logger)
         result = combine_command(
-            plan,
+            plan_obj,
             PandasReader(),
-            PandasWriter(),
+            PandasWriter(),  # type: ignore[arg-type]
             progress_hooks=[hook],
         )
         logger.info("combine_completed", **result)
-        _echo_json(result)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     except typer.Exit:
         raise
     except ExcelMgrError as exc:
@@ -217,7 +212,7 @@ def split(
     out_format: Annotated[str, typer.Option("--format")] = "xlsx",
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ):
-    logger = app.state["logger"]
+    logger = app.state["logger"]  # type: ignore[attr-defined]
     from .options import read_password_map, read_secret
 
     try:
@@ -236,7 +231,7 @@ def split(
         if to == "sheets" and format_normalized != "xlsx":
             raise ExcelMgrError("Sheet mode output must be Excel format.")
 
-        plan = SplitPlan(
+        plan_obj = SplitPlan(
             input_file=input_file,
             sheet=sheet_spec,
             by_column=by_col,
@@ -252,13 +247,13 @@ def split(
         )
         hook = _make_progress_hook(logger)
         result = split_command(
-            plan,
+            plan_obj,
             PandasReader(),
-            PandasWriter(),
+            PandasWriter(),  # type: ignore[arg-type]
             progress_hooks=[hook],
         )
         logger.info("split_completed", **result)
-        _echo_json(result)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     except typer.Exit:
         raise
     except ExcelMgrError as exc:
@@ -278,7 +273,7 @@ def preview(
     password_map: Annotated[str | None, typer.Option("--password-map")] = None,
     limit: Annotated[int | None, typer.Option("--limit", help="Optional sample row limit per sheet.")] = None,
 ):
-    logger = app.state["logger"]
+    logger = app.state["logger"]  # type: ignore[attr-defined]
     from .options import read_password_map, read_secret
 
     try:
@@ -286,10 +281,10 @@ def preview(
         pw_map = read_password_map(password_map)
         if limit is not None and limit < 0:
             raise ExcelMgrError("--limit must be positive when provided.")
-        plan = PreviewPlan(path=path, password=pw, password_map=pw_map, limit=limit)
-        result = preview_command(plan, PandasReader())
+        plan_obj = PreviewPlan(path=path, password=pw, password_map=pw_map, limit=limit)
+        result = preview_command(plan_obj, PandasReader())
         logger.info("preview_completed", path=path, sheets=len(result.get("sheets", [])))
-        _echo_json(result)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     except typer.Exit:
         raise
     except ExcelMgrError as exc:
@@ -322,7 +317,7 @@ def delete_cols(
     password_map: Annotated[str | None, typer.Option("--password-map")] = None,
     yes: Annotated[bool, typer.Option("--yes")] = False,
 ):
-    logger = app.state["logger"]
+    logger = app.state["logger"]  # type: ignore[attr-defined]
     from .options import read_password_map, read_secret
 
     try:
@@ -343,13 +338,14 @@ def delete_cols(
                 raise typer.Exit(code=0)
 
         # targets -> Sequence[str] | Sequence[int]
+        targets_list: list[str] | list[int]
         if match == "index":
             try:
                 targets_list = [int(x) for x in targets.split(",") if x.strip()]
             except ValueError as exc:
                 raise ExcelMgrError("--targets must be integers when --match index is used.") from exc
         else:
-            targets_list: list[str] = [t.strip() for t in targets.split(",") if t.strip()]
+            targets_list = [t.strip() for t in targets.split(",") if t.strip()]
 
         if not targets_list:
             raise ExcelMgrError("--targets must include at least one entry.")
@@ -374,7 +370,7 @@ def delete_cols(
             path=path,
             targets=targets_list,
             match_kind=match,
-            strategy=strategy,
+            strategy=strategy,  # type: ignore[arg-type]
             all_sheets=all_sheets,
             sheet_selector=sheet_selector,
             inplace=inplace,
@@ -389,11 +385,11 @@ def delete_cols(
         result = delete_columns_command(
             spec,
             PandasReader(),
-            PandasWriter(),
+            PandasWriter(),  # type: ignore[arg-type]
             progress_hooks=[hook],
         )
         logger.info("delete_cols_completed", **result)
-        _echo_json(result)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     except typer.Exit:
         raise
     except ExcelMgrError as exc:
@@ -408,18 +404,18 @@ def delete_cols(
 def plan(
     plan_file: Annotated[str, typer.Argument(help="Path to a JSON or YAML plan file.")],
 ):
-    logger = app.state["logger"]
+    logger = app.state["logger"]  # type: ignore[attr-defined]
     try:
         operations = load_plan_file(plan_file)
         hook = _make_progress_hook(logger)
         results = execute_plan(
             operations,
             PandasReader(),
-            PandasWriter(),
+            PandasWriter(),  # type: ignore[arg-type]
             progress_hooks=[hook],
         )
         logger.info("plan_completed", operations=len(results))
-        _echo_json({"operations": results})
+        print(json.dumps({"operations": results}, indent=2, ensure_ascii=False))
     except typer.Exit:
         raise
     except ExcelMgrError as exc:
@@ -449,11 +445,11 @@ def diagnose():
             "macro_policy": settings.macro_policy,
         },
     }
-    _echo_json(info)
+    print(json.dumps(info, indent=2, ensure_ascii=False))
 
 
 @app.command(help="Show version.")
 def version():
     from excelmgr import __version__
 
-    typer.echo(__version__)
+    print(__version__)
